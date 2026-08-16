@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "docker-builder">
 <!ENTITY author    "Kyle">
-<!ENTITY version   "2026.08.16">
+<!ENTITY version   "2026.08.17">
 <!ENTITY launch    "Settings">
 <!ENTITY plugdir   "/usr/local/emhttp/plugins/&name;">
 <!ENTITY pluginURL "">
@@ -12,6 +12,9 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.12.0" support="https://github.com/TheNoticingBegins">
 
 <CHANGES>
+###2026.08.17
+- FIX: Removed SCRIPT section that deleted .page and .php files after install
+- FIX: Page now properly shows under Settings as "Docker Builder"
 ###2026.08.16
 - Complete rebuild matching Unraid XML format
 - Full field support: Network, Privileged, CPUset, WebUI, Icon, ExtraParams, PostArgs
@@ -563,12 +566,5 @@ if ($t) {
 }
 ?>]]></INLINE>
 </FILE>
-
-<SCRIPT>
-# Clean up old versions to prevent "skipping" on reinstall
-rm -f /usr/local/emhttp/plugins/docker-builder/DockerBuilder.page
-rm -f /usr/local/emhttp/plugins/docker-builder/DockerBuilder.php
-exit 0
-</SCRIPT>
 
 </PLUGIN>
