@@ -13,9 +13,13 @@
 
 <CHANGES>
 ###2026.08.17
-- FIX: Removed SCRIPT section that deleted .page and .php files after install
-- FIX: Page now properly shows under Settings as "Docker Builder"
+- FIX: SCRIPT now runs before FILE sections — clean old files then install fresh
+- FIX: Added remove script (Method="remove") — cleans plugin dir + config on uninstall
+- FIX: Missing CDATA close marker (]]>) in .page file — caused "Invalid .page format" error
+- FIX: Proper icon DockerBuilder.png shipped as base64 inline
+
 ###2026.08.16
+- FIX: Page now properly shows under Settings as "Docker Builder"
 - Complete rebuild matching Unraid XML format
 - Full field support: Network, Privileged, CPUset, WebUI, Icon, ExtraParams, PostArgs
 - GPU button (AMD/NVIDIA device mappings)
