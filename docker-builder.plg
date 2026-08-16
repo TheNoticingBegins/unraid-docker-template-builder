@@ -336,10 +336,14 @@ if (isset($_GET['loadfile'])) {
 ]]></INLINE>
 </FILE>
 
+<FILE Name="&plugdir;/DockerBuilder.png">
+<INLINE base64="true">iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAVElEQVR4nGPQsQugKWIYtYAkCxhmniEPjVpAngUQcVpZABdnoMRcXBYgi1PfAjRxKluAKT5qAb3jAHsqonk+GJI5eVgUdlgsoAUatWDUglELhoMFAPNw5VfuHWy4AAAAAElFTkSuQmCC</INLINE>
+</FILE>
+
 <FILE Name="&plugdir;/DockerBuilder.page">
 <INLINE><![CDATA[Menu="Settings"
 Title="Docker Builder"
-Icon="docker.png"
+Icon="DockerBuilder.png"
 ---
 <?php
 require_once '/usr/local/emhttp/plugins/docker-builder/DockerBuilder.php';
