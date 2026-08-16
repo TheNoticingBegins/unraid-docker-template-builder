@@ -13,279 +13,322 @@
 
 <CHANGES>
 ###2026.08.16
-- Initial release
-- Visual form to build Docker containers
-- Generate docker run commands
-- Save and load Docker XML templates
-- One-click container launch
+- Complete rebuild matching Unraid XML format
+- Full field support: Network, Privileged, CPUset, WebUI, Icon, ExtraParams, PostArgs
+- GPU button (AMD/NVIDIA device mappings)
+- Config entries: Type="Port|Path|Variable|Device" with Display/Required/Mask
+- Requires field for required config warnings
+- Template verification matching real Unraid schema
 </CHANGES>
 
 <FILE Name="&plugdir;/DockerBuilder.php">
 <INLINE><![CDATA[<?php
-/*
- * Docker Builder — PHP backend
- * Handles form processing, command generation, template saving, container launch.
- */
 
-function getDefaultTemplateDir() {
-    return "/boot/config/plugins/dockerMan/templates-user";
+function getDefaultTemplateDir() { return "/boot/config/plugins/dockerMan/templates-user"; }
+
+function getCfgPath() { return "/boot/config/plugins/docker-builder/builder.cfg"; }
+
+function getConfig() {
+    $cfg = ['template_dir' => getDefaultTemplateDir()];
+    if (!file_exists(getCfgPath())) return $cfg;
+    foreach (file(getCfgPath(), FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        if (strpos($line, '=') === false || $line[0] === '#') continue;
+        [$k, $v] = explode('=', $line, 2);
+        $cfg[trim($k)] = trim($v);
+    }
+    return $cfg;
+}
+
+function saveConfig($cfg) {
+    $d = dirname(getCfgPath());
+    if (!is_dir($d)) @mkdir($d, 0755, true);
+    $out = '';
+    foreach ($cfg as $k => $v) {
+        $q = "'" . str_replace("'", "'\\''", $v) . "'";
+        $out .= "$k=$q\n";
+    }
+    file_put_contents(getCfgPath(), $out);
 }
 
 function getTemplateDir() {
     $dir = isset($_POST['template_dir']) ? trim($_POST['template_dir']) : '';
-    if ($dir === '') {
-        $dir = isset($_GET['template_dir']) ? trim($_GET['template_dir']) : '';
-    }
-    if ($dir === '') {
-        // Check saved config
-        $cfg = getConfig();
-        $dir = $cfg['template_dir'] ?? '';
-    }
-    if ($dir === '') {
-        $dir = getDefaultTemplateDir();
-    }
+    if ($dir === '') $dir = isset($_GET['template_dir']) ? trim($_GET['template_dir']) : '';
+    if ($dir === '') { $c = getConfig(); $dir = $c['template_dir'] ?? ''; }
+    if ($dir === '') $dir = getDefaultTemplateDir();
     return rtrim($dir, '/');
 }
 
-function getConfig() {
-    $cfgFile = "/boot/config/plugins/docker-builder/config.json";
-    if (file_exists($cfgFile)) {
-        $data = json_decode(file_get_contents($cfgFile), true);
-        if (is_array($data)) return $data;
+function dockerNetworks() {
+    $nets = [];
+    exec("docker network ls --format '{{.Name}}' 2>/dev/null", $out);
+    foreach ($out as $n) {
+        $n = trim($n);
+        if ($n !== '' && preg_match('/^[A-Za-z0-9_.-]+$/', $n)) $nets[] = $n;
     }
-    return ['template_dir' => getDefaultTemplateDir()];
+    return array_values(array_unique($nets));
 }
 
-function saveConfig($cfg) {
-    $dir = "/boot/config/plugins/docker-builder";
-    if (!is_dir($dir)) @mkdir($dir, 0755, true);
-    file_put_contents("$dir/config.json", json_encode($cfg, JSON_PRETTY_PRINT));
-}
-
-function buildDockerRunCommand($name, $repo, $envVars, $ports, $volumes, $network, $restart, $extraArgs) {
+function buildDockerRunCommand($name, $repo, $net, $priv, $shell, $cpuset, $extra, $post, $envVars, $ports, $volumes, $devices) {
     $cmd = "docker run -d \\\n";
-    $cmd .= "  --name=" . escapeshellarg($name) . " \\\n";
-    $cmd .= "  --restart=" . escapeshellarg($restart) . " \\\n";
-    $cmd .= "  --network=" . escapeshellarg($network) . " \\\n";
+    if ($name) $cmd .= "  --name=" . escapeshellarg($name) . " \\\n";
+    if ($net === 'host') $cmd .= "  --network=host \\\n";
+    elseif ($net === 'none') $cmd .= "  --network=none \\\n";
+    elseif ($net && $net !== 'bridge') $cmd .= "  --network=" . escapeshellarg($net) . " \\\n";
+    if ($priv === 'true') $cmd .= "  --privileged \\\n";
+    if ($shell) $cmd .= "  --entrypoint=" . escapeshellarg($shell) . " \\\n";
+    if ($cpuset) $cmd .= "  --cpuset-cpus=" . escapeshellarg($cpuset) . " \\\n";
     foreach (explode("\n", $envVars) as $line) {
-        $line = trim($line);
-        if (!$line) continue;
-        if (strpos($line, '=') !== false) {
-            $cmd .= "  -e " . escapeshellarg($line) . " \\\n";
-        }
+        $line = trim($line); if (!$line) continue;
+        if (strpos($line, '=') !== false) $cmd .= "  -e " . escapeshellarg($line) . " \\\n";
     }
     foreach (explode("\n", $ports) as $line) {
-        $line = trim($line);
-        if (!$line || strpos($line, ':') === false) continue;
+        $line = trim($line); if (!$line || strpos($line, ':') === false) continue;
         $cmd .= "  -p " . escapeshellarg($line) . " \\\n";
     }
     foreach (explode("\n", $volumes) as $line) {
-        $line = trim($line);
-        if (!$line || strpos($line, ':') === false) continue;
+        $line = trim($line); if (!$line || strpos($line, ':') === false) continue;
         $cmd .= "  -v " . escapeshellarg($line) . " \\\n";
     }
-    if ($extraArgs) {
-        $cmd .= "  " . $extraArgs . " \\\n";
+    foreach (explode("\n", $devices) as $line) {
+        $line = trim($line); if (!$line) continue;
+        $cmd .= "  --device=" . escapeshellarg($line) . " \\\n";
     }
-    $cmd .= "  " . escapeshellarg($repo);
+    if ($extra) $cmd .= "  " . $extra . " \\\n";
+    if ($repo) $cmd .= "  " . escapeshellarg($repo);
+    if ($post) $cmd .= " " . $post;
     return $cmd;
 }
 
-function saveDockerTemplate($name, $repo, $repoUrl, $overview, $envVars, $ports, $volumes, $network, $restart, $category, $extraArgs, $templateDir) {
-    $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '', $name);
-    if (!$safeName) return "Error: Invalid container name";
-    if (!is_dir($templateDir)) @mkdir($templateDir, 0755, true);
-    $xml = "<?xml version=\"1.0\"?>\n";
-    $xml .= "<Container version=\"2\">\n";
-    $xml .= "  <Name>" . htmlspecialchars($name) . "</Name>\n";
-    $xml .= "  <Repository>" . htmlspecialchars($repo) . "</Repository>\n";
-    $xml .= "  <Registry>" . htmlspecialchars($repoUrl) . "</Registry>\n";
-    $xml .= "  <Support>" . htmlspecialchars($repoUrl ? $repoUrl . '/issues' : '') . "</Support>\n";
-    $xml .= "  <Overview>" . htmlspecialchars($overview) . "</Overview>\n";
-    $xml .= "  <Category>" . htmlspecialchars($category) . "</Category>\n";
-    if ($network === 'host') {
-        $xml .= "  <Networking>\n    <Mode>host</Mode>\n  </Networking>\n";
-    }
-    foreach (explode("\n", $ports) as $line) {
-        $line = trim($line);
-        if (!$line || strpos($line, ':') === false) continue;
-        list($host, $cont) = explode(':', $line, 2);
-        $xml .= "  <Config Name=\"" . htmlspecialchars($cont) . "\" Target=\"" . htmlspecialchars($cont) . "\" Default=\"" . htmlspecialchars($host) . "\" Mode=\"tcp\" Description=\"Port\" Type=\"Port\" />\n";
-    }
-    foreach (explode("\n", $volumes) as $line) {
-        $line = trim($line);
-        if (!$line || strpos($line, ':') === false) continue;
-        list($host, $cont) = explode(':', $line, 2);
-        $xml .= "  <Config Name=\"" . htmlspecialchars(basename($host)) . "\" Target=\"" . htmlspecialchars($cont) . "\" Default=\"" . htmlspecialchars($host) . "\" Mode=\"rw\" Description=\"Volume\" Type=\"Path\" />\n";
-    }
-    foreach (explode("\n", $envVars) as $line) {
-        $line = trim($line);
-        if (!$line || strpos($line, '=') === false) continue;
-        list($key, $val) = explode('=', $line, 2);
-        $xml .= "  <Environment name=\"" . htmlspecialchars($key) . "\" label=\"" . htmlspecialchars($key) . "\" mode=\"s\" description=\"\" default=\"" . htmlspecialchars($val) . "\" required=\"false\" />\n";
-    }
-    $xml .= "</Container>\n";
-    $file = "$templateDir/$safeName.xml";
-    if (file_put_contents($file, $xml)) {
-        saveConfig(['template_dir' => $templateDir]);
-        return "Template saved to $file\n\nIt will appear in Community Applications under 'Installed Apps'.";
-    }
-    return "Error: Could not write template file.";
+function saveDockerTemplate($name, $repo, $reg, $net, $priv, $shell, $support, $project, $readme, $overview, $cat, $webui, $templateurl, $icon, $extra, $post, $cpuset, $requires, $envCfg, $portCfg, $volCfg, $devCfg, $dir) {
+    $safe = preg_replace('/[^a-zA-Z0-9_-]/', '', $name);
+    if (!$safe) return "Error: Invalid container name";
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+
+    $x = "<?xml version=\"1.0\"?>\n<Container version=\"2\">\n";
+    if ($name) $x .= "  <Name>" . h($name) . "</Name>\n";
+    if ($repo) $x .= "  <Repository>" . h($repo) . "</Repository>\n";
+    if ($reg) $x .= "  <Registry>" . h($reg) . "</Registry>\n";
+    if ($net) $x .= "  <Network>" . h($net) . "</Network>\n";
+    if ($priv === 'true') $x .= "  <Privileged>true</Privileged>\n";
+    else $x .= "  <Privileged>false</Privileged>\n";
+    if ($shell) $x .= "  <Shell>" . h($shell) . "</Shell>\n";
+    if ($support) $x .= "  <Support>" . h($support) . "</Support>\n";
+    if ($project) $x .= "  <Project>" . h($project) . "</Project>\n";
+    if ($readme) $x .= "  <ReadMe>" . h($readme) . "</ReadMe>\n";
+    if ($overview) $x .= "  <Overview>" . h($overview) . "</Overview>\n";
+    if ($cat) $x .= "  <Category>" . h($cat) . "</Category>\n";
+    if ($webui) $x .= "  <WebUI>" . h($webui) . "</WebUI>\n";
+    if ($templateurl) $x .= "  <TemplateURL>" . h($templateurl) . "</TemplateURL>\n";
+    if ($icon) $x .= "  <Icon>" . h($icon) . "</Icon>\n";
+    if ($extra) $x .= "  <ExtraParams>" . h($extra) . "</ExtraParams>\n";
+    if ($post) $x .= "  <PostArgs>" . h($post) . "</PostArgs>\n";
+    if ($cpuset) $x .= "  <CPUset>" . h($cpuset) . "</CPUset>\n";
+    if ($requires) $x .= "  <Requires>" . h($requires) . "</Requires>\n";
+
+    $x .= "  <DateInstalled>" . time() . "</DateInstalled>\n";
+
+    // Process Config entries from CSV-like input
+    foreach (explode("\n", $envCfg) as $line) { $line = trim($line); if ($line) $x .= makeConfig($line, 'Variable'); }
+    foreach (explode("\n", $portCfg) as $line) { $line = trim($line); if ($line) $x .= makeConfig($line, 'Port'); }
+    foreach (explode("\n", $volCfg) as $line) { $line = trim($line); if ($line) $x .= makeConfig($line, 'Path'); }
+    foreach (explode("\n", $devCfg) as $line) { $line = trim($line); if ($line) $x .= makeConfig($line, 'Device'); }
+
+    $x .= "</Container>\n";
+    $f = "$dir/$safe.xml";
+    if (file_put_contents($f, $x)) { saveConfig(['template_dir' => $dir]); return "Saved to $f"; }
+    return "Error: Could not write template.";
 }
 
-function launchContainer($name, $repo, $envVars, $ports, $volumes, $network, $restart, $extraArgs) {
-    $cmd = buildDockerRunCommand($name, $repo, $envVars, $ports, $volumes, $network, $restart, $extraArgs);
-    $output = shell_exec($cmd . " 2>&1");
-    if ($output === null) return "Error: Failed to execute docker run command.";
-    return "Container launched successfully.\n\nCommand:\n$cmd\n\nOutput:\n" . trim($output);
+function h($s) { return htmlspecialchars($s, ENT_XML1, 'UTF-8'); }
+
+function makeConfig($line, $type) {
+    // Format: Name|Target|Default|Mode|Description|Required|Display|Mask|Value
+    // Required/Display/Mask optional. Display: always (default) or advanced
+    $parts = explode('|', $line);
+    $name = isset($parts[0]) ? trim($parts[0]) : '';
+    $target = isset($parts[1]) ? trim($parts[1]) : '';
+    $default = isset($parts[2]) ? trim($parts[2]) : '';
+    $mode = isset($parts[3]) ? trim($parts[3]) : ($type === 'Path' ? 'rw' : ($type === 'Port' ? 'tcp' : ''));
+    $desc = isset($parts[4]) ? trim($parts[4]) : '';
+    $required = isset($parts[5]) ? trim($parts[5]) : 'false';
+    $display = isset($parts[6]) ? trim($parts[6]) : 'always';
+    $mask = isset($parts[7]) ? trim($parts[7]) : 'false';
+    $value = isset($parts[8]) ? trim($parts[8]) : '';
+
+    $x = '  <Config';
+    if ($name) $x .= ' Name="' . h($name) . '"';
+    if ($target) $x .= ' Target="' . h($target) . '"';
+    if ($default !== '' || $type === 'Port') $x .= ' Default="' . h($default) . '"';
+    if ($mode) $x .= ' Mode="' . h($mode) . '"';
+    if ($desc) $x .= ' Description="' . h($desc) . '"';
+    $x .= ' Type="' . $type . '"';
+    $x .= ' Display="' . $display . '"';
+    $x .= ' Required="' . $required . '"';
+    $x .= ' Mask="' . $mask . '"';
+    $x .= '>';
+    if ($value) $x .= h($value);
+    $x .= "</Config>\n";
+    return $x;
+}
+
+function launchContainer($name, $repo, $net, $priv, $shell, $cpuset, $extra, $post, $envVars, $ports, $volumes, $devices) {
+    $cmd = buildDockerRunCommand($name, $repo, $net, $priv, $shell, $cpuset, $extra, $post, $envVars, $ports, $volumes, $devices);
+    $out = shell_exec($cmd . " 2>&1");
+    return "Command:\n$cmd\n\nOutput:\n" . trim($out ?? 'No output');
 }
 
 function listTemplates($dir) {
     if (!is_dir($dir)) return [];
-    $templates = [];
+    $t = [];
     foreach (glob("$dir/*.xml") as $f) {
         $xml = simplexml_load_file($f);
-        if ($xml && isset($xml->Name)) {
-            $templates[] = [
-                'name' => (string)$xml->Name,
-                'repository' => (string)$xml->Repository,
-                'file' => basename($f),
-            ];
-        }
+        if ($xml && isset($xml->Name)) $t[] = ['name' => (string)$xml->Name, 'repository' => (string)$xml->Repository, 'file' => basename($f)];
     }
-    return $templates;
+    return $t;
 }
 
 function loadTemplateFile($file) {
     if (!file_exists($file)) return null;
     $xml = simplexml_load_file($file);
     if (!$xml) return null;
+
+    // Build config entries
+    $envCfg = []; $portCfg = []; $volCfg = []; $devCfg = [];
+    foreach ($xml->Config as $cfg) {
+        $type = (string)$cfg['Type'];
+        $entry = (string)$cfg['Name'] . '|' . (string)$cfg['Target'] . '|' . (string)$cfg['Default'] . '|' . (string)$cfg['Mode'] . '|' . (string)$cfg['Description'] . '|' . (string)$cfg['Required'] . '|' . (string)$cfg['Display'] . '|' . (string)$cfg['Mask'] . '|' . (string)$cfg;
+        if ($type === 'Variable') $envCfg[] = $entry;
+        elseif ($type === 'Port') $portCfg[] = $entry;
+        elseif ($type === 'Device') $devCfg[] = $entry;
+        else $volCfg[] = $entry;
+    }
+
     return [
         'name' => (string)$xml->Name,
         'repository' => (string)$xml->Repository,
-        'repo_url' => (string)$xml->Registry,
+        'registry' => (string)$xml->Registry,
+        'network' => (string)$xml->Network,
+        'privileged' => (string)$xml->Privileged,
+        'shell' => (string)$xml->Shell,
+        'support' => (string)$xml->Support,
+        'project' => (string)$xml->Project,
+        'readme' => (string)$xml->ReadMe,
         'overview' => (string)$xml->Overview,
         'category' => (string)$xml->Category,
+        'webui' => (string)$xml->WebUI,
+        'templateurl' => (string)$xml->TemplateURL,
+        'icon' => (string)$xml->Icon,
+        'extra' => (string)$xml->ExtraParams,
+        'post' => (string)$xml->PostArgs,
+        'cpuset' => (string)$xml->CPUset,
+        'requires' => (string)$xml->Requires,
+        'envCfg' => implode("\n", $envCfg),
+        'portCfg' => implode("\n", $portCfg),
+        'volCfg' => implode("\n", $volCfg),
+        'devCfg' => implode("\n", $devCfg),
     ];
 }
 
 function verifyTemplateFile($file) {
     $issues = [];
-    $errors = libxml_use_internal_errors(true);
+    $errs = libxml_use_internal_errors(true);
     $xml = simplexml_load_file($file);
     if ($xml === false) {
-        foreach (libxml_get_errors() as $err) {
-            $issues[] = "XML parse error: " . trim($err->message) . " (line " . $err->line . ")";
-        }
+        foreach (libxml_get_errors() as $e) $issues[] = "XML error: " . trim($e->message) . " (line $e->line)";
         libxml_clear_errors();
+        libxml_use_internal_errors($errs);
         return $issues;
     }
-    libxml_use_internal_errors($errors);
-
-    $name = (string)$xml->Name;
-    $basename = basename($file);
-
-    // Required fields
-    if (empty($name)) $issues[] = "[$basename] Missing <Name> — container name is required";
-    $repo = (string)$xml->Repository;
-    if (empty($repo)) $issues[] = "[$basename] Missing <Repository> — image is required";
-    else {
-        // Repository should look like image[:tag]
-        if (preg_match('/^[a-zA-Z0-9.\/:_-]+$/', $repo) !== 1) {
-            $issues[] = "[$basename] Repository contains invalid characters: '$repo'";
-        }
-        if (strpos($repo, ' ') !== false) {
-            $issues[] = "[$basename] Repository must not contain spaces: '$repo'";
-        }
-    }
-
-    // Container element must have version attr
-    if (empty($xml['version'])) {
-        $issues[] = "[$basename] <Container> missing version attribute (should be version=\"2\")";
-    }
-
-    // Check Config entries (ports/volumes)
+    libxml_use_internal_errors($errs);
+    $bn = basename($file);
+    if (empty((string)$xml->Name)) $issues[] = "[$bn] Missing <Name>";
+    if (empty((string)$xml->Repository)) $issues[] = "[$bn] Missing <Repository>";
+    if (!preg_match('/^[a-zA-Z0-9.\/: _-]+$/', (string)$xml->Repository)) $issues[] = "[$bn] Repository has invalid chars";
+    $priv = (string)$xml->Privileged;
+    if ($priv !== '' && $priv !== 'true' && $priv !== 'false') $issues[] = "[$bn] Privileged must be true/false, got '$priv'";
+    $net = (string)$xml->Network;
+    if ($net && !in_array($net, ['bridge','host','none']) && preg_match('/^[a-zA-Z0-9._-]+$/', $net) !== 1) $issues[] = "[$bn] Network '$net' looks invalid";
     foreach ($xml->Config as $cfg) {
-        $target = (string)$cfg['Target'];
+        $t = (string)$cfg['Target'];
         $type = (string)$cfg['Type'];
-        if (empty($target)) {
-            $issues[] = "[$basename] A <Config> entry is missing the Target attribute";
-        }
-        if (empty($type)) {
-            $issues[] = "[$basename] Config entry '$target' is missing Type (Port/Path/WebUI)";
-        }
-        if ($type === 'Port') {
-            $default = (string)$cfg['Default'];
-            if ($default !== '' && preg_match('/^\d+$/D', $default) !== 1) {
-                $issues[] = "[$basename] Config '$target' is Type=Port but Default='$default' is not a valid port number";
-            }
-        }
+        if (!$t) $issues[] = "[$bn] Config missing Target";
+        if (!in_array($type, ['Port','Path','Variable','Device'])) $issues[] = "[$bn] Config has unknown Type '$type'";
+        if ($type === 'Port' && !preg_match('/^\d+$/', (string)$cfg['Default'])) $issues[] = "[$bn] Port '".(string)$cfg['Name']."' has non-numeric default";
+        if ($type === 'Port' && !preg_match('/^\d+$/', $t)) $issues[] = "[$bn] Port target '$t' is not a number";
+        $req = (string)$cfg['Required'];
+        if ($req && $req !== 'true' && $req !== 'false') $issues[] = "[$bn] Required must be true/false, got '$req'";
     }
-
-    // Check Environment entries
-    foreach ($xml->Environment as $env) {
-        $key = (string)$env['name'];
-        if (empty($key)) {
-            $issues[] = "[$basename] An <Environment> entry is missing the name attribute";
-        } else {
-            if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/D', $key) !== 1) {
-                $issues[] = "[$basename] Environment name '$key' is invalid (must be KEY format, e.g. BOT_TOKEN)";
-            }
-        }
-        if (empty($env['default']) && !empty($env['required']) && strtolower($env['required']) === 'true') {
-            $issues[] = "[$basename] Required environment variable '$key' has no default value";
-        }
-    }
-
-    // Check for empty container (no config, no env, no ports)
-    if (count($xml->Config) === 0 && count($xml->Environment) === 0) {
-        $issues[] = "[$basename] Template has no Config or Environment entries — is this complete?";
-    }
-
+    if (count($issues) === 0) $issues[] = "✓ $bn passed.";
     return $issues;
 }
 
 function verifyAllTemplates($dir) {
-    if (!is_dir($dir)) {
-        return ["Template directory does not exist: $dir"];
-    }
+    if (!is_dir($dir)) return ["Directory does not exist: $dir"];
     $files = glob("$dir/*.xml");
-    if (!$files) {
-        return ["No .xml template files found in $dir"];
-    }
-    $allIssues = [];
-    $checked = 0;
-    foreach ($files as $f) {
-        $checked++;
-        $issues = verifyTemplateFile($f);
-        foreach ($issues as $i) {
-            $allIssues[] = $i;
-        }
-    }
-    if (empty($allIssues)) {
-        $allIssues[] = "✓ All $checked template file(s) passed validation.";
-    } else {
-        array_unshift($allIssues, "Checked $checked file(s), found " . count($allIssues) . " issue(s):");
-    }
+    if (!$files) return ["No .xml files in $dir"];
+    $allIssues = []; $checked = 0;
+    foreach ($files as $f) { $checked++; foreach (verifyTemplateFile($f) as $i) $allIssues[] = $i; }
+    array_unshift($allIssues, "Checked $checked file(s):");
+    if ($checked > 0 && count($allIssues) === 1) $allIssues[0] = "✓ All $checked template(s) passed.";
     return $allIssues;
 }
 
-if (isset($_GET['ajax'])) {
-    header('Content-Type: application/json');
-    $templateDir = getTemplateDir();
-    $templates = listTemplates($templateDir);
-    echo json_encode($templates);
-    exit;
+
+function browseDir($path) {
+    $path = rtrim($path, '/');
+    if (!is_dir($path)) return ['path' => $path, 'parent' => dirname($path), 'items' => []];
+    $items = [];
+    foreach (scandir($path) as $name) {
+        if ($name === '.' || $name === '..') continue;
+        $full = $path . '/' . $name;
+        $items[] = ['name' => $name, 'is_dir' => is_dir($full), 'path' => $full];
+    }
+    usort($items, function($a, $b) {
+        if ($a['is_dir'] !== $b['is_dir']) return $a['is_dir'] ? -1 : 1;
+        return strcasecmp($a['name'], $b['name']);
+    });
+    return ['path' => $path, 'parent' => dirname($path), 'items' => $items];
 }
 
+
+function getUnraidShares() {
+    $shares = [];
+    $paths = ['/mnt/user', '/mnt/disks', '/mnt/remotes'];
+    foreach ($paths as $base) {
+        if (!is_dir($base)) continue;
+        $dh = opendir($base);
+        if (!$dh) continue;
+        while (($name = readdir($dh)) !== false) {
+            if ($name[0] === '.') continue;
+            $full = "$base/$name";
+            if (is_dir($full)) $shares[] = $full;
+        }
+        closedir($dh);
+    }
+    sort($shares);
+    return $shares;
+}
+
+// AJAX handlers
+
+if (isset($_GET['browse'])) {
+    header('Content-Type: application/json');
+    $p = isset($_GET['path']) ? $_GET['path'] : '/mnt/user';
+    echo json_encode(browseDir($p)); exit;
+}
+
+if (isset($_GET['shares'])) {
+    header('Content-Type: application/json');
+    echo json_encode(getUnraidShares()); exit;
+}
+if (isset($_GET['ajax'])) {
+    header('Content-Type: application/json');
+    echo json_encode(listTemplates(getTemplateDir())); exit;
+}
 if (isset($_GET['loadfile'])) {
     header('Content-Type: application/json');
-    $templateDir = getTemplateDir();
-    $file = basename($_GET['loadfile']);
-    $path = "$templateDir/$file";
-    $data = loadTemplateFile($path);
-    echo json_encode($data ?: []);
-    exit;
+    $f = basename($_GET['loadfile']); $p = getTemplateDir() . "/$f";
+    echo json_encode(loadTemplateFile($p) ?: []); exit;
 }
 ]]></INLINE>
 </FILE>
@@ -296,94 +339,80 @@ if (isset($_GET['loadfile'])) {
 <PRE>
 <?php
 require_once '/usr/local/emhttp/plugins/docker-builder/DockerBuilder.php';
+$m = isset($_POST['mode']) ? $_POST['mode'] : '';
+$f = [
+    'template_dir','container_name','repository','registry','network','privileged','shell',
+    'support','project','readme','overview','category','webui','templateurl','icon',
+    'extra_params','post_args','cpuset','requires',
+    'env_config','port_config','vol_config','dev_config'
+];
+$d = []; foreach ($f as $k) $d[$k] = isset($_POST[$k]) ? $_POST[$k] : '';
+$td = getTemplateDir();
 
-$mode = isset($_POST['mode']) ? $_POST['mode'] : '';
-
-$containerName = isset($_POST['container_name']) ? $_POST['container_name'] : '';
-$repository    = isset($_POST['repository']) ? $_POST['repository'] : '';
-$repoUrl       = isset($_POST['repo_url']) ? $_POST['repo_url'] : '';
-$overview      = isset($_POST['overview']) ? $_POST['overview'] : '';
-$envVars       = isset($_POST['env_vars']) ? $_POST['env_vars'] : '';
-$ports         = isset($_POST['ports']) ? $_POST['ports'] : '';
-$volumes       = isset($_POST['volumes']) ? $_POST['volumes'] : '';
-$network       = isset($_POST['network']) ? $_POST['network'] : 'bridge';
-$restartPolicy = isset($_POST['restart_policy']) ? $_POST['restart_policy'] : 'unless-stopped';
-$category      = isset($_POST['category']) ? $_POST['category'] : 'Productivity:';
-$extraArgs     = isset($_POST['extra_args']) ? $_POST['extra_args'] : '';
-
-$templateDir = getTemplateDir();
-
-$result = '';
-if ($mode === 'build_command') {
-    $result = buildDockerRunCommand($containerName, $repository, $envVars, $ports, $volumes, $network, $restartPolicy, $extraArgs);
-} elseif ($mode === 'save_template') {
-    $result = saveDockerTemplate($containerName, $repository, $repoUrl, $overview, $envVars, $ports, $volumes, $network, $restartPolicy, $category, $extraArgs, $templateDir);
-} elseif ($mode === 'launch') {
-    $result = launchContainer($containerName, $repository, $envVars, $ports, $volumes, $network, $restartPolicy, $extraArgs);
-} elseif ($mode === 'verify') {
-    $verification = verifyAllTemplates($templateDir);
-    $result = implode("\n", $verification);
-}
+$r = '';
+if ($m === 'build_command') {
+    $r = buildDockerRunCommand($d['container_name'],$d['repository'],$d['network'],$d['privileged'],$d['shell'],$d['cpuset'],$d['extra_params'],$d['post_args'],$d['env_config'],$d['port_config'],$d['vol_config'],$d['dev_config']);
+} elseif ($m === 'save_template') {
+    $r = saveDockerTemplate($d['container_name'],$d['repository'],$d['registry'],$d['network'],$d['privileged'],$d['shell'],$d['support'],$d['project'],$d['readme'],$d['overview'],$d['category'],$d['webui'],$d['templateurl'],$d['icon'],$d['extra_params'],$d['post_args'],$d['cpuset'],$d['requires'],$d['env_config'],$d['port_config'],$d['vol_config'],$d['dev_config'],$td);
+} elseif ($m === 'launch') {
+    $r = launchContainer($d['container_name'],$d['repository'],$d['network'],$d['privileged'],$d['shell'],$d['cpuset'],$d['extra_params'],$d['post_args'],$d['env_config'],$d['port_config'],$d['vol_config'],$d['dev_config']);
+} elseif ($m === 'verify') { $r = implode("\n", verifyAllTemplates($td)); }
 ?>
 </PRE>
 <MARKDOWN>
 ## Docker Builder
 
-Create Docker containers without clicking through menus. Fill in the details and generate a ready-to-use command or save a template.
+Create Docker containers. Fill in the form to generate commands or save templates.
 
 ---
 </MARKDOWN>
 <PRE>
 <?php
-$form = '
+$h = 'htmlspecialchars';
+echo '
 <script>
-// Load templates into dropdown
-async function loadTemplateList() {
-    const dir = document.getElementById("template_dir").value;
-    try {
-        const resp = await fetch("/Settings/DockerBuilder?ajax=1&template_dir=" + encodeURIComponent(dir));
-        const templates = await resp.json();
-        const sel = document.getElementById("template_select");
-        sel.innerHTML = "<option value=\"\">-- Select existing template --</option>";
-        for (const t of templates) {
-            const opt = document.createElement("option");
-            opt.value = t.file;
-            opt.textContent = t.name + " (" + t.repository + ")";
-            sel.appendChild(opt);
-        }
-    } catch(e) {}
+async function refreshList() {
+    const d = document.getElementById("template_dir").value;
+    const r = await fetch("/Settings/DockerBuilder?ajax=1&template_dir="+encodeURIComponent(d));
+    const t = await r.json();
+    const s = document.getElementById("template_select");
+    s.innerHTML = "<option value=\"\">-- Select --</option>";
+    t.forEach(x => { const o = document.createElement("option"); o.value=x.file; o.textContent=x.name+" ("+x.repository+")"; s.appendChild(o); });
 }
-
-// Load a selected template into the form
-async function loadSelectedTemplate(file) {
+async function loadSelected(file) {
     if (!file) return;
-    const dir = document.getElementById("template_dir").value;
-    try {
-        const resp = await fetch("/Settings/DockerBuilder?loadfile=" + encodeURIComponent(file) + "&template_dir=" + encodeURIComponent(dir));
-        const data = await resp.json();
-        if (data.name) {
-            document.querySelector("input[name=\"container_name\"").value = data.name;
-            document.querySelector("input[name=\"repository\"").value = data.repository || "";
-            document.querySelector("input[name=\"repo_url\"").value = data.repo_url || "";
-            document.querySelector("input[name=\"overview\"").value = data.overview || "";
-            document.querySelector("input[name=\"category\"").value = data.category || "";
-        }
-    } catch(e) {}
+    const d = document.getElementById("template_dir").value;
+    const r = await fetch("/Settings/DockerBuilder?loadfile="+encodeURIComponent(file)+"&template_dir="+encodeURIComponent(d));
+    const data = await r.json();
+    if (!data.name) return;
+    const map = {
+        container_name:"name", repository:"repository", registry:"registry", network:"network",
+        privileged:"privileged", shell:"shell", support:"support", project:"project",
+        readme:"readme", overview:"overview", category:"category", webui:"webui",
+        templateurl:"templateurl", icon:"icon", extra_params:"extra", post_args:"post",
+        cpuset:"cpuset", requires:"requires",
+        env_config:"envCfg", port_config:"portCfg", vol_config:"volCfg", dev_config:"devCfg"
+    };
+    for (const [formKey, dataKey] of Object.entries(map)) {
+        const el = document.querySelector("[name=\""+formKey+"\"]");
+        if (el) el.value = data[dataKey] || "";
+    }
 }
-
-// Clear form for new template
-function clearForm() {
-    document.querySelectorAll("input[type=\"text\"], textarea").forEach(el => el.value = "");
-    document.getElementById("template_select").value = "";
+function clearForm() { document.querySelectorAll("input, textarea, select").forEach(e => { if (e.type!=="hidden" && e.type!=="submit" && e.type!=="button") e.value=""; }); document.getElementById("template_select").value=""; }
+function addGPU() {
+    const e = document.querySelector("[name=\"extra_params\"]");
+    const gpu = "--device=/dev/dri --device=/dev/kfd";
+    if (e.value.indexOf(gpu)===-1) e.value = (e.value.trim() ? e.value.trim()+" ":"") + gpu;
 }
-
-// Refresh template list when directory changes
+function addNVIDIA() {
+    const e = document.querySelector("[name=\"extra_params\"]");
+    const nv = "--gpus all";
+    if (e.value.indexOf(nv)===-1) e.value = (e.value.trim() ? e.value.trim()+" ":"") + nv;
+}
 document.addEventListener("DOMContentLoaded", function() {
-    document.getElementById("template_dir").addEventListener("change", loadTemplateList);
-    document.getElementById("template_select").addEventListener("change", function() {
-        loadSelectedTemplate(this.value);
-    });
-    loadTemplateList();
+    document.getElementById("template_dir").addEventListener("change", refreshList);
+    document.getElementById("template_select").addEventListener("change", function() { loadSelected(this.value); });
+    refreshList();
 });
 </script>
 
@@ -392,48 +421,140 @@ document.addEventListener("DOMContentLoaded", function() {
 
 <h3>Template Directory</h3>
 <table class="settings_table">
-<tr><td><b>Template Directory</b></td><td><input type="text" id="template_dir" name="template_dir" value="' . htmlspecialchars($templateDir) . '" style="width:100%" placeholder="/boot/config/plugins/dockerMan/templates-user"><br><i>Where Docker XML template files are stored</i></td></tr>
+<tr><td><b>Template Directory</b></td><td><div style="display:flex;gap:6px"><input type="text" id="template_dir" name="template_dir" value="'.$h($d["template_dir"]?:$td).'" style="width:100%" placeholder="/boot/config/plugins/dockerMan/templates-user"><input type="button" value="Browse" class="button" onclick="browseFS(); document.getElementById('browse_path').value=document.getElementById('template_dir').value" style="flex-shrink:0"></div><br><i>Where Docker XML template files are stored</i></td></tr>
 </table>
 
 <h3>New or Existing</h3>
 <table class="settings_table">
 <tr><td><b>Existing Templates</b></td><td>
-<select id="template_select" style="width:80%">
-<option value="">-- Select existing template --</option>
+<select id="template_select" style="width:70%"><option value="">-- Select --</option></select>
+<input type="button" value="Load" class="button" onclick="loadSelected(document.getElementById(\'template_select\').value)">
+<input type="button" value="New Template" class="button" onclick="clearForm()"></td></tr>
+</table>
+
+<h3>Basic Info</h3>
+<table class="settings_table">
+<tr><td><b>Name</b> *</td><td><input type="text" name="container_name" value="'.$h($d["container_name"]).'" style="width:100%" placeholder="e.g. jellyfin"></td></tr>
+<tr><td><b>Repository</b> *</td><td><input type="text" name="repository" value="'.$h($d["repository"]).'" style="width:100%" placeholder="e.g. lscr.io/linuxserver/jellyfin:latest"></td></tr>
+<tr><td><b>Registry</b></td><td><input type="text" name="registry" value="'.$h($d["registry"]).'" style="width:100%" placeholder="https://github.com/org/repo"></td></tr>
+<tr><td><b>Overview</b></td><td><textarea name="overview" rows="3" style="width:100%" placeholder="Description of the container">'.$h($d["overview"]).'</textarea></td></tr>
+<tr><td><b>Category</b></td><td><input type="text" name="category" value="'.$h($d["category"]).'" style="width:100%" placeholder="e.g. MediaServer:Video MediaServer:Music"></td></tr>
+</table>
+
+<h3>Networking & Security</h3>
+<table class="settings_table">
+<tr><td><b>Network</b></td><td><select name="network" style="width:100%">
+<option value="bridge"'.($d["network"]==="bridge"?" selected":"").'>bridge (default)</option>
+<option value="host"'.($d["network"]==="host"?" selected":"").'>host</option>
+<option value="none"'.($d["network"]==="none"?" selected":"").'>none</option>
+</select><br><i>Or enter a custom network name below</i>
+<input type="text" name="network_custom" value="'.(in_array($d["network"],["bridge","host","none",""])?"":$h($d["network"])).'" style="width:100%" placeholder="Custom network name"></td></tr>
+<tr><td><b>Privileged</b></td><td>
+<input type="radio" name="privileged" value="false"'.($d["privileged"]!=="true"?" checked":"").'> False
+<input type="radio" name="privileged" value="true"'.($d["privileged"]==="true"?" checked":"").'> True
+<br><i>Default: false. Only enable if the container needs raw device access.</i></td></tr>
+<tr><td><b>Shell / Entrypoint</b></td><td><input type="text" name="shell" value="'.$h($d["shell"]).'" style="width:100%" placeholder="bash"></td></tr>
+<tr><td><b>WebUI</b></td><td><input type="text" name="webui" value="'.$h($d["webui"]).'" style="width:100%" placeholder="http://[IP]:[PORT:8096]"></td></tr>
+</table>
+
+<h3>Links & Branding</h3>
+<table class="settings_table">
+<tr><td><b>Support URL</b></td><td><input type="text" name="support" value="'.$h($d["support"]).'" style="width:100%" placeholder="https://github.com/org/repo/issues"></td></tr>
+<tr><td><b>Project URL</b></td><td><input type="text" name="project" value="'.$h($d["project"]).'" style="width:100%" placeholder="https://github.com/org/repo"></td></tr>
+<tr><td><b>ReadMe URL</b></td><td><input type="text" name="readme" value="'.$h($d["readme"]).'" style="width:100%"></td></tr>
+<tr><td><b>Icon URL</b></td><td><input type="text" name="icon" value="'.$h($d["icon"]).'" style="width:100%" placeholder="https://example.com/icon.png"></td></tr>
+</table>
+
+<h3>Config Entries <span style="font-weight:normal;font-size:smaller">Format: Name|Target|Default|Mode|Description|Required|Display|Mask|Value</span></h3>
+<p><i>Each line is one entry. Pipe-separated fields. Required=true shows a star in the UI. Display=advanced hides it unless "Show advanced" is ticked.</i></p>
+<table class="settings_table">
+<tr><td><b>Environment Variables</b> (Type=Variable)</td><td><textarea name="env_config" rows="4" style="width:100%;font-family:monospace" placeholder="BOT_TOKEN|BOT_TOKEN|your-token||Bot token from @BotFather|true">'.$h($d["env_config"]).'</textarea></td></tr>
+<tr><td><b>Port Mappings</b> (Type=Port)</td><td><textarea name="port_config" rows="4" style="width:100%;font-family:monospace" placeholder="WebUI|8096|8096|tcp|HTTP web interface|true">'.$h($d["port_config"]).'</textarea></td></tr>
+<tr><td><b>Volume Mounts</b> (Type=Path)</td><td><div style="display:flex;gap:6px"><div style="display:flex;gap:6px">
+<select id="share_selector" style="flex:1;font-family:monospace" onchange="insertShare()">
+<option value="">-- Pick an Unraid share --</option>
 </select>
-<input type="button" value="Load" class="button" onclick="loadSelectedTemplate(document.getElementById(\'template_select\').value)">
+<input type="button" value="Refresh Shares" class="button" onclick="loadShares()" style="flex-shrink:0">
+</div>
+<script>
+async function loadShares() {
+    try {
+        const r = await fetch("/Settings/DockerBuilder?shares=1");
+        const shares = await r.json();
+        const sel = document.getElementById("share_selector");
+        sel.innerHTML = "<option value=\"\">-- Pick an Unraid share --</option>";
+        shares.forEach(s => {
+            const o = document.createElement("option");
+            o.value = s;
+            o.textContent = s;
+            sel.appendChild(o);
+        });
+    } catch(e) {}
+}
+function insertShare() {
+    const sel = document.getElementById("share_selector");
+    if (!sel.value) return;
+    const txt = document.querySelector("textarea[name=\"vol_config\"]");
+    if (!txt) return;
+    // Find position after last | to insert the share as default path
+    const lines = txt.value.split("\n");
+    const last = lines.length - 1;
+    const parts = lines[last].split("|");
+    // Insert share into the Default field (3rd position, index 2)
+    if (parts.length >= 3) {
+        parts[2] = sel.value;
+        lines[last] = parts.join("|");
+    } else if (parts.length === 2) {
+        lines[last] = parts.join("|") + "|" + sel.value;
+    } else {
+        lines[last] = "New Path|/container/path|" + sel.value + "|rw";
+    }
+    txt.value = lines.join("\n");
+}
+document.addEventListener("DOMContentLoaded", loadShares);
+</script>
+<textarea name="vol_config" rows="4" style="width:100%;font-family:monospace" placeholder="Appdata|/config|/mnt/user/appdata/myapp|rw|Config storage|true">'.$h($d["vol_config"]).'</textarea></td></tr>
+<tr><td><b>Device Mappings</b> (Type=Device)</td><td><textarea name="dev_config" rows="3" style="width:100%;font-family:monospace" placeholder="Host Device 1|/dev/dri|||GPU acceleration||always">'.$h($d["dev_config"]).'</textarea></td></tr>
+</table>
+
+<h3>Advanced</h3>
+<table class="settings_table">
+<tr><td><b>Extra Parameters</b></td><td>
+<textarea name="extra_params" rows="3" style="width:100%;font-family:monospace" placeholder="--device=/dev/dri --device=/dev/kfd">'.$h($d["extra_params"]).'</textarea>
+<br>
+<input type="button" value="Add AMD GPU" class="button" onclick="addGPU()">
+<input type="button" value="Add NVIDIA GPU" class="button" onclick="addNVIDIA()">
 </td></tr>
-<tr><td></td><td><input type="button" value="New Template" class="button" onclick="clearForm(); document.getElementById(\'template_select\').value=\'\'; document.querySelector(\'input[name=\"container_name\"]\').focus();"></td></tr>
-</table>
-
-<h3>Container Details</h3>
-<table class="settings_table">
-<tr><td><b>Container Name</b></td><td><input type="text" name="container_name" value="' . htmlspecialchars($containerName) . '" style="width:100%" placeholder="e.g. omni-operator"></td></tr>
-<tr><td><b>Repository (Image)</b></td><td><input type="text" name="repository" value="' . htmlspecialchars($repository) . '" style="width:100%" placeholder="e.g. ghcr.io/user/repo:latest"></td></tr>
-<tr><td><b>Repository URL</b></td><td><input type="text" name="repo_url" value="' . htmlspecialchars($repoUrl) . '" style="width:100%" placeholder="e.g. https://github.com/user/repo"></td></tr>
-<tr><td><b>Overview / Description</b></td><td><input type="text" name="overview" value="' . htmlspecialchars($overview) . '" style="width:100%" placeholder="Brief description"></td></tr>
-<tr><td><b>Category</b></td><td><input type="text" name="category" value="' . htmlspecialchars($category) . '" style="width:100%" placeholder="e.g. Productivity:Tools:"></td></tr>
-<tr><td><b>Restart Policy</b></td><td><select name="restart_policy" style="width:100%">
-<option value="unless-stopped"' . ($restartPolicy === "unless-stopped" ? " selected" : "") . '>unless-stopped</option>
-<option value="always"' . ($restartPolicy === "always" ? " selected" : "") . '>always</option>
-<option value="on-failure"' . ($restartPolicy === "on-failure" ? " selected" : "") . '>on-failure</option>
-<option value="no"' . ($restartPolicy === "no" ? " selected" : "") . '>no (do not restart)</option>
-</select></td></tr>
-<tr><td><b>Network Mode</b></td><td><select name="network" style="width:100%">
-<option value="bridge"' . ($network === "bridge" ? " selected" : "") . '>bridge</option>
-<option value="host"' . ($network === "host" ? " selected" : "") . '>host</option>
-<option value="none"' . ($network === "none" ? " selected" : "") . '>none</option>
-</select></td></tr>
-</table>
-
-<h3>Configuration</h3>
-<table class="settings_table">
-<tr><td><b>Environment Variables</b><br><i>one per line: KEY=value</i></td><td><textarea name="env_vars" rows="6" style="width:100%;font-family:monospace" placeholder="BOT_TOKEN=your-token
-AUTHORIZED_USERS=12345">' . htmlspecialchars($envVars) . '</textarea></td></tr>
-<tr><td><b>Port Mappings</b><br><i>one per line: host:container</i></td><td><textarea name="ports" rows="4" style="width:100%;font-family:monospace" placeholder="8080:8080">' . htmlspecialchars($ports) . '</textarea></td></tr>
-<tr><td><b>Volume Mounts</b><br><i>one per line: /host/path:/container/path</i></td><td><textarea name="volumes" rows="4" style="width:100%;font-family:monospace" placeholder="/mnt/user/appdata/my-app/data:/data">' . htmlspecialchars($volumes) . '</textarea></td></tr>
-<tr><td><b>Extra Docker Args</b><br><i>optional flags like --cap-add, --device</i></td><td><textarea name="extra_args" rows="2" style="width:100%;font-family:monospace" placeholder="--cap-add=NET_ADMIN
---device=/dev/dri">' . htmlspecialchars($extraArgs) . '</textarea></td></tr>
+<tr><td><b>Post Args</b></td><td><input type="text" name="post_args" value="'.$h($d["post_args"]).'" style="width:100%;font-family:monospace" placeholder="Arguments after image name"></td></tr>
+<tr><td><b>CPUset (CPU Pinning)</b></td><td>
+<input type="text" name="cpuset" value="'.$h($d["cpuset"]).'" style="width:100%" placeholder="e.g. 0,1,2,3 or 0-3"><br>
+<i>Enter CPU core numbers separated by commas or hyphens. Click cores below to toggle:</i><br>
+<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">';
+// Generate clickable CPU core buttons
+for ($i = 0; $i <= 15; $i++) {
+    $sel = (strpos($d["cpuset"], "$i") !== false) ? ' style="background:#4CAF50;color:white"' : '';
+    echo '<span class="button cpu-btn" data-core="'.$i.'" onclick="toggleCPU('.$i.')"'.$sel.'>'.$i.'</span>';
+}
+echo '
+</div>
+<script>
+function toggleCPU(c) {
+    const inp = document.querySelector("[name=\"cpuset\"]");
+    let vals = inp.value ? inp.value.split(",").map(x => x.trim()).filter(x => x !== "") : [];
+    const idx = vals.indexOf(String(c));
+    if (idx > -1) vals.splice(idx, 1); else vals.push(String(c));
+    vals.sort((a,b) => parseInt(a)-parseInt(b));
+    inp.value = vals.join(",");
+    // Update button highlight
+    document.querySelectorAll(".cpu-btn").forEach(b => {
+        const core = parseInt(b.getAttribute("data-core"));
+        b.style.background = inp.value.split(",").indexOf(String(core)) > -1 ? "#4CAF50" : "";
+        b.style.color = inp.value.split(",").indexOf(String(core)) > -1 ? "white" : "";
+    });
+}
+</script>
+</td></tr>
+<tr><td><b>Requires</b></td><td><input type="text" name="requires" value="'.$h($d["requires"]).'" style="width:100%" placeholder="e.g. BOT_TOKEN,AUTHORIZED_USERS"><br><i>Comma-separated env vars that must be set</i></td></tr>
 </table>
 
 <br>
@@ -441,19 +562,49 @@ AUTHORIZED_USERS=12345">' . htmlspecialchars($envVars) . '</textarea></td></tr>
 <input type="submit" value="Save as Docker Template" class="button" formaction="/Settings/DockerBuilder" onclick="this.form.mode.value=\'save_template\'">
 <input type="submit" value="Launch Container Now" class="button" style="background:#4CAF50;color:white" formaction="/Settings/DockerBuilder" onclick="this.form.mode.value=\'launch\'">
 <input type="submit" value="Verify Templates" class="button" style="background:#FF9800;color:white" formaction="/Settings/DockerBuilder" onclick="this.form.mode.value=\'verify\'">
+
+<script>
+async function browseFS() {
+    const panel = document.getElementById("browser-panel");
+    const path = document.getElementById("browse_path").value || "/mnt/user";
+    panel.style.display = "block";
+    panel.innerHTML = "Loading...";
+    try {
+        const r = await fetch("/Settings/DockerBuilder?browse=1&path=" + encodeURIComponent(path));
+        const data = await r.json();
+        let html = "";
+        if (data.parent && data.parent !== data.path) {
+            html += "<div style=\"cursor:pointer;padding:4px 6px;color:#4fc3f7;font-weight:bold\" onclick=\"document.getElementById(\'browse_path\').value=\'' + data.parent + '\';browseFS()\">.. (up)</div>";
+        }
+        for (const item of data.items) {
+            const icon = item.is_dir ? "📁" : "📄";
+            const click = item.is_dir ? "document.getElementById(\'browse_path\').value=\'' + item.path.replace(/\'/g, "\\'") + '\';browseFS()" : "";
+            html += "<div style=\"cursor:pointer;padding:4px 6px\" onclick=\"" + click + "\">" + icon + " " + item.name + "</div>";
+        }
+        panel.innerHTML = html;
+        // If there\'s a target textarea, also offer to insert
+        const activeInput = document.activeElement;
+        if (activeInput && activeInput.name === "vol_config") {
+            panel.innerHTML += "<div style=\"margin-top:8px;padding-top:8px;border-top:1px solid #333\"><i>Click a folder to navigate. Use the path above.</i></div>";
+        }
+    } catch(e) {
+        panel.innerHTML = "Error loading directory";
+    }
+}
+</script>
+
 </form>
 </div>';
-echo $form;
 ?>
 </PRE>
 <PRE>
-<?php if ($result): ?>
+<?php if ($r): ?>
 </PRE>
 <MARKDOWN>
 ## Result
 
 ```
-<?php echo htmlspecialchars($result); ?>
+<?php echo htmlspecialchars($r); ?>
 ```
 </MARKDOWN>
 <PRE>
@@ -461,14 +612,11 @@ echo $form;
 </PRE>
 <PRE>
 <?php
-// List saved templates below
-$templates = listTemplates($templateDir);
-if ($templates) {
-    echo '<h2>Templates in ' . htmlspecialchars($templateDir) . '</h2>';
-    echo '<table class="settings_table"><tr><th>File</th><th>Container</th><th>Repository</th></tr>';
-    foreach ($templates as $t) {
-        echo '<tr><td>' . htmlspecialchars($t['file']) . '</td><td>' . htmlspecialchars($t['name']) . '</td><td>' . htmlspecialchars($t['repository']) . '</td></tr>';
-    }
+$t = listTemplates($td);
+if ($t) {
+    echo "<h2>Templates in " . htmlspecialchars($td) . "</h2>\n";
+    echo '<table class="settings_table"><tr><th>File</th><th>Name</th><th>Repository</th></tr>';
+    foreach ($t as $x) echo '<tr><td>' . htmlspecialchars($x['file']) . '</td><td>' . htmlspecialchars($x['name']) . '</td><td>' . htmlspecialchars($x['repository']) . '</td></tr>';
     echo '</table>';
 }
 ?>

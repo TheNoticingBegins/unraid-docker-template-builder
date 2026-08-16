@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html><head><style>
+body { font-family: 'Segoe UI', Arial, sans-serif; background: #1a1a2e; color: #ddd; max-width: 900px; margin: 20px auto; padding: 20px; }
+h2 { color: #fff; border-bottom: 1px solid #333; padding-bottom: 8px; margin-top: 24px; font-size: 16px; }
+h3 { color: #4fc3f7; font-size: 14px; margin: 18px 0 8px; }
+.settings_table { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
+.settings_table td { padding: 6px 8px; border: 1px solid #333; vertical-align: top; }
+.settings_table td:first-child { width: 200px; background: #16213e; color: #aaa; font-size: 13px; }
+input, textarea, select { background: #0f3460; color: #fff; border: 1px solid #1a4a7a; padding: 6px 8px; border-radius: 3px; font-size: 13px; box-sizing: border-box; }
+input:focus, textarea:focus, select:focus { outline: none; border-color: #4fc3f7; }
+.button { background: #1a4a7a; color: #fff; border: none; padding: 7px 16px; border-radius: 3px; cursor: pointer; font-size: 13px; display: inline-block; margin: 2px; }
+.button:hover { background: #2a6a9a; }
+.cpu-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; background: #0f3460; border: 1px solid #1a4a7a; border-radius: 3px; cursor: pointer; font-size: 12px; margin: 2px; }
+.cpu-btn.active { background: #4CAF50; color: white; }
+</style></head><body>
+
+<h2>Docker Builder</h2>
+<p style="color:#888;font-size:13px">Create Docker containers. Fill in the form to generate commands or save templates.</p>
+<hr style="border-color:#333">
+
+<h3>Template Directory</h3>
+<table class="settings_table">
+<tr><td><b>Template Directory</b></td><td><input type="text" style="width:100%" value="/boot/config/plugins/dockerMan/templates-user"><br><i>Where Docker XML template files are stored</i></td></tr>
+</table>
+
+<h3>New or Existing</h3>
+<table class="settings_table">
+<tr><td><b>Existing Templates</b></td><td>
+<select style="width:70%"><option>-- Select --</option><option>jellyfin (lscr.io/linuxserver/jellyfin:latest)</option><option>omni-operator (ghcr.io/...:latest)</option></select>
+<input type="button" value="Load" class="button">
+<input type="button" value="New Template" class="button" style="background:#e65100">
+</td></tr>
+</table>
+
+<h3>Basic Info</h3>
+<table class="settings_table">
+<tr><td><b>Name</b> *</td><td><input type="text" style="width:100%" placeholder="e.g. jellyfin" value="jellyfin"></td></tr>
+<tr><td><b>Repository</b> *</td><td><input type="text" style="width:100%" placeholder="e.g. lscr.io/linuxserver/jellyfin:latest" value="lscr.io/linuxserver/jellyfin:latest"></td></tr>
+<tr><td><b>Registry</b></td><td><input type="text" style="width:100%" placeholder="https://github.com/org/repo" value="https://github.com/linuxserver/docker-jellyfin"></td></tr>
+<tr><td><b>Overview</b></td><td><textarea rows="3" style="width:100%" placeholder="Description of the container">Jellyfin is a Free Software Media System that puts you in control of managing and streaming your media.</textarea></td></tr>
+<tr><td><b>Category</b></td><td><input type="text" style="width:100%" placeholder="e.g. MediaServer:Video MediaServer:Music" value="MediaServer:Video MediaServer:Music"></td></tr>
+</table>
+
+<h3>Networking &amp; Security</h3>
+<table class="settings_table">
+<tr><td><b>Network</b></td><td>
+<select style="width:100%"><option>bridge (default)</option><option>host</option><option>none</option></select>
+<i>Or enter a custom network name below</i>
+<input type="text" style="width:100%" placeholder="Custom network name">
+</td></tr>
+<tr><td><b>Privileged</b></td><td>
+<input type="radio" checked> False
+<input type="radio"> True
+<br><i>Default: false. Only enable if the container needs raw device access.</i></td></tr>
+<tr><td><b>Shell / Entrypoint</b></td><td><input type="text" style="width:100%" placeholder="bash"></td></tr>
+<tr><td><b>WebUI</b></td><td><input type="text" style="width:100%" placeholder="http://[IP]:[PORT:8096]" value="http://[IP]:[PORT:8096]"></td></tr>
+</table>
+
+<h3>Links &amp; Branding</h3>
+<table class="settings_table">
+<tr><td><b>Support URL</b></td><td><input type="text" style="width:100%" placeholder="https://github.com/org/repo/issues"></td></tr>
+<tr><td><b>Project URL</b></td><td><input type="text" style="width:100%" placeholder="https://github.com/org/repo" value="https://github.com/jellyfin/jellyfin"></td></tr>
+<tr><td><b>ReadMe URL</b></td><td><input type="text" style="width:100%"></td></tr>
+<tr><td><b>Icon URL</b></td><td><input type="text" style="width:100%" placeholder="https://example.com/icon.png"></td></tr>
+</table>
+
+<h3>Config Entries <span style="font-weight:normal;font-size:smaller">Format: Name|Target|Default|Mode|Description|Required|Display|Mask|Value</span></h3>
+<p><i>Each line is one entry. Required=true shows a star. Display=advanced hides unless advanced is ticked.</i></p>
+<table class="settings_table">
+<tr><td><b>Environment Variables</b><br>(Type=Variable)</td><td><textarea rows="4" style="width:100%;font-family:monospace">PUID|PUID|99|{3}|User ID|truealways|false|99
+PGID|PGID|100|{3}|Group ID|true</textarea></td></tr>
+<tr><td><b>Port Mappings</b><br>(Type=Port)</td><td><textarea rows="4" style="width:100%;font-family:monospace">WebUI|8096|8096|tcp|HTTP web interface|true
+Port: 8920|8920|8920|tcp|HTTPS webUI|false</textarea></td></tr>
+<tr><td><b>Volume Mounts</b><br>(Type=Path)</td><td><textarea rows="4" style="width:100%;font-family:monospace">Appdata|/config|/mnt/user/appdata/jellyfin|rw|Config storage|true
+Media|/data/media|/mnt/user/Media|rw|Media library||advanced</textarea></td></tr>
+<tr><td><b>Device Mappings</b><br>(Type=Device)</td><td><textarea rows="3" style="width:100%;font-family:monospace">Host Device 1|/dev/dri|||GPU acceleration||always</textarea></td></tr>
+</table>
+
+<h3>Advanced</h3>
+<table class="settings_table">
+<tr><td><b>Extra Parameters</b></td><td>
+<textarea rows="3" style="width:100%;font-family:monospace">--device=/dev/dri --device=/dev/kfd</textarea><br>
+<input type="button" value="Add AMD GPU" class="button">
+<input type="button" value="Add NVIDIA GPU" class="button">
+</td></tr>
+<tr><td><b>Post Args</b></td><td><input type="text" style="width:100%;font-family:monospace" placeholder="Arguments after image name"></td></tr>
+<tr><td><b>CPUset (CPU Pinning)</b></td><td>
+<input type="text" style="width:100%" placeholder="0,1,2,3 or 0-3" value="0,1,2,3"><br>
+<i>Enter CPU core numbers. Click cores below to toggle:</i><br>
+<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">
+<span class="cpu-btn active">0</span><span class="cpu-btn active">1</span><span class="cpu-btn active">2</span><span class="cpu-btn active">3</span>
+<span class="cpu-btn">4</span><span class="cpu-btn">5</span><span class="cpu-btn">6</span><span class="cpu-btn">7</span>
+<span class="cpu-btn">8</span><span class="cpu-btn">9</span><span class="cpu-btn">10</span><span class="cpu-btn">11</span>
+<span class="cpu-btn">12</span><span class="cpu-btn">13</span><span class="cpu-btn">14</span><span class="cpu-btn">15</span>
+</div></td></tr>
+<tr><td><b>Requires</b></td><td><input type="text" style="width:100%" placeholder="BOT_TOKEN,AUTHORIZED_USERS"><br><i>Comma-separated env vars that must be set</i></td></tr>
+</table>
+
+<br>
+<input type="button" value="Generate docker run Command" class="button">
+<input type="button" value="Save as Docker Template" class="button">
+<input type="button" value="Launch Container Now" class="button" style="background:#4CAF50;color:white">
+<input type="button" value="Verify Templates" class="button" style="background:#FF9800;color:white">
+
+</body></html>
