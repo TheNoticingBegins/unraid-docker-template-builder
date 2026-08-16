@@ -24,6 +24,14 @@
 - Template verification matching real Unraid schema
 </CHANGES>
 
+<SCRIPT>
+# Clean up plugin files for fresh install
+rm -f /usr/local/emhttp/plugins/docker-builder/DockerBuilder.page
+rm -f /usr/local/emhttp/plugins/docker-builder/DockerBuilder.php
+rm -f /usr/local/emhttp/plugins/docker-builder/DockerBuilder.png
+exit 0
+</SCRIPT>
+
 <FILE Name="&plugdir;/DockerBuilder.php">
 <INLINE><![CDATA[<?php
 
