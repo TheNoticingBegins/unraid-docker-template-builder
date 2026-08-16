@@ -3,7 +3,7 @@
   <!ENTITY name      "docker-builder">
   <!ENTITY author    "Kyle">
   <!ENTITY version   "2026.08.17">
-  <!ENTITY launch    "Settings">
+  <!ENTITY launch    "Settings/DockerBuilder">
   <!ENTITY plugdir   "/usr/local/emhttp/plugins/&name;">
   <!ENTITY pluginURL "">
   <!ENTITY md5       "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6">
