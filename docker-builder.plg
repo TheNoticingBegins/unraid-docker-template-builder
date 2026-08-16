@@ -1,0 +1,244 @@
+<?xml version='1.0' standalone='yes'?>
+<!DOCTYPE PLUGIN [
+<!ENTITY name      "docker-builder">
+<!ENTITY author    "Kyle">
+<!ENTITY version   "2026.08.16">
+<!ENTITY launch    "Settings">
+<!ENTITY plugdir   "/usr/local/emhttp/plugins/&name;">
+<!ENTITY pluginURL "">
+<!ENTITY md5       "">
+]>
+
+<PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.12.0" support="https://github.com/TheNoticingBegins">
+
+<CHANGES>
+###2026.08.16
+- Initial release
+- Visual form to build Docker containers
+- Generate docker run commands
+- Save and load Docker XML templates
+- One-click container launch
+</CHANGES>
+
+<FILE Name="&plugdir;/DockerBuilder.php">
+<INLINE><![CDATA[<?php
+/*
+ * Docker Builder — PHP backend
+ * Handles form processing, command generation, template saving, container launch.
+ */
+
+function buildDockerRunCommand($name, $repo, $envVars, $ports, $volumes, $network, $restart) {
+    $cmd = "docker run -d \\\n";
+    $cmd .= "  --name=" . escapeshellarg($name) . " \\\n";
+    $cmd .= "  --restart=" . escapeshellarg($restart) . " \\\n";
+    $cmd .= "  --network=" . escapeshellarg($network) . " \\\n";
+    foreach (explode("\n", $envVars) as $line) {
+        $line = trim($line);
+        if (!$line) continue;
+        if (strpos($line, '=') !== false) {
+            $cmd .= "  -e " . escapeshellarg($line) . " \\\n";
+        }
+    }
+    foreach (explode("\n", $ports) as $line) {
+        $line = trim($line);
+        if (!$line || strpos($line, ':') === false) continue;
+        $cmd .= "  -p " . escapeshellarg($line) . " \\\n";
+    }
+    foreach (explode("\n", $volumes) as $line) {
+        $line = trim($line);
+        if (!$line || strpos($line, ':') === false) continue;
+        $cmd .= "  -v " . escapeshellarg($line) . " \\\n";
+    }
+    $cmd .= "  " . escapeshellarg($repo);
+    return $cmd;
+}
+
+function saveDockerTemplate($name, $repo, $repoUrl, $overview, $envVars, $ports, $volumes, $network, $restart, $category) {
+    $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '', $name);
+    if (!$safeName) return "Error: Invalid container name";
+    $templateDir = "/boot/config/plugins/dockerMan/templates-user";
+    if (!is_dir($templateDir)) @mkdir($templateDir, 0755, true);
+    $xml = "<?xml version=\"1.0\"?>\n";
+    $xml .= "<Container version=\"2\">\n";
+    $xml .= "  <Name>" . htmlspecialchars($name) . "</Name>\n";
+    $xml .= "  <Repository>" . htmlspecialchars($repo) . "</Repository>\n";
+    $xml .= "  <Registry>" . htmlspecialchars($repoUrl) . "</Registry>\n";
+    $xml .= "  <Support>" . htmlspecialchars($repoUrl ? $repoUrl . '/issues' : '') . "</Support>\n";
+    $xml .= "  <Overview>" . htmlspecialchars($overview) . "</Overview>\n";
+    $xml .= "  <Category>" . htmlspecialchars($category) . "</Category>\n";
+    if ($network === 'host') {
+        $xml .= "  <Networking>\n    <Mode>host</Mode>\n  </Networking>\n";
+    }
+    foreach (explode("\n", $ports) as $line) {
+        $line = trim($line);
+        if (!$line || strpos($line, ':') === false) continue;
+        list($host, $cont) = explode(':', $line, 2);
+        $xml .= "  <Config Name=\"" . htmlspecialchars($cont) . "\" Target=\"" . htmlspecialchars($cont) . "\" Default=\"" . htmlspecialchars($host) . "\" Mode=\"tcp\" Description=\"Port\" Type=\"Port\" />\n";
+    }
+    foreach (explode("\n", $volumes) as $line) {
+        $line = trim($line);
+        if (!$line || strpos($line, ':') === false) continue;
+        list($host, $cont) = explode(':', $line, 2);
+        $xml .= "  <Config Name=\"" . htmlspecialchars(basename($host)) . "\" Target=\"" . htmlspecialchars($cont) . "\" Default=\"" . htmlspecialchars($host) . "\" Mode=\"rw\" Description=\"Volume\" Type=\"Path\" />\n";
+    }
+    foreach (explode("\n", $envVars) as $line) {
+        $line = trim($line);
+        if (!$line || strpos($line, '=') === false) continue;
+        list($key, $val) = explode('=', $line, 2);
+        $xml .= "  <Environment name=\"" . htmlspecialchars($key) . "\" label=\"" . htmlspecialchars($key) . "\" mode=\"s\" description=\"\" default=\"" . htmlspecialchars($val) . "\" required=\"false\" />\n";
+    }
+    $xml .= "</Container>\n";
+    $file = "$templateDir/$safeName.xml";
+    if (file_put_contents($file, $xml)) {
+        return "Template saved to $file\n\nIt will appear in Community Applications under 'Installed Apps'.";
+    }
+    return "Error: Could not write template file.";
+}
+
+function launchContainer($name, $repo, $envVars, $ports, $volumes, $network, $restart) {
+    $cmd = buildDockerRunCommand($name, $repo, $envVars, $ports, $volumes, $network, $restart);
+    $output = shell_exec($cmd . " 2>&1");
+    if ($output === null) return "Error: Failed to execute docker run command.";
+    return "Container launched successfully.\n\nCommand:\n$cmd\n\nOutput:\n" . trim($output);
+}
+
+function listSavedTemplates() {
+    $dir = "/boot/config/plugins/dockerMan/templates-user";
+    if (!is_dir($dir)) return [];
+    $templates = [];
+    foreach (glob("$dir/*.xml") as $f) {
+        $xml = simplexml_load_file($f);
+        if ($xml) {
+            $templates[] = [
+                'name' => (string)$xml->Name,
+                'repository' => (string)$xml->Repository,
+                'file' => basename($f),
+            ];
+        }
+    }
+    return $templates;
+}
+
+if (isset($_GET['load'])) {
+    $file = basename($_GET['load']);
+    $path = "/boot/config/plugins/dockerMan/templates-user/$file";
+    if (file_exists($path)) {
+        header("Location: /Settings/DockerBuilder?loaded=" . urlencode($file));
+        exit;
+    }
+}
+]]></INLINE>
+</FILE>
+
+<FILE Name="&plugdir;/DockerBuilder.page">
+<INLINE><![CDATA[<?xml version="1.0"?>
+<Page name="DockerBuilder" title="Docker Builder" icon="docker.png" markdown="true" menu="Settings">
+<PRE>
+<?php
+require_once '/usr/local/emhttp/plugins/docker-builder/DockerBuilder.php';
+
+$mode = isset($_POST['mode']) ? $_POST['mode'] : '';
+$containerName = isset($_POST['container_name']) ? $_POST['container_name'] : '';
+$repository    = isset($_POST['repository']) ? $_POST['repository'] : '';
+$repoUrl       = isset($_POST['repo_url']) ? $_POST['repo_url'] : '';
+$overview      = isset($_POST['overview']) ? $_POST['overview'] : '';
+$envVars       = isset($_POST['env_vars']) ? $_POST['env_vars'] : '';
+$ports         = isset($_POST['ports']) ? $_POST['ports'] : '';
+$volumes       = isset($_POST['volumes']) ? $_POST['volumes'] : '';
+$network       = isset($_POST['network']) ? $_POST['network'] : 'bridge';
+$restartPolicy = isset($_POST['restart_policy']) ? $_POST['restart_policy'] : 'unless-stopped';
+$category      = isset($_POST['category']) ? $_POST['category'] : 'Productivity:';
+
+$result = '';
+if ($mode === 'build_command') {
+    $result = buildDockerRunCommand($containerName, $repository, $envVars, $ports, $volumes, $network, $restartPolicy);
+} elseif ($mode === 'save_template') {
+    $result = saveDockerTemplate($containerName, $repository, $repoUrl, $overview, $envVars, $ports, $volumes, $network, $restartPolicy, $category);
+} elseif ($mode === 'launch') {
+    $result = launchContainer($containerName, $repository, $envVars, $ports, $volumes, $network, $restartPolicy);
+}
+?>
+</PRE>
+<MARKDOWN>
+## Docker Builder
+
+Create Docker containers without clicking through menus. Fill in the details and generate a ready-to-use command or save a template.
+
+---
+</MARKDOWN>
+<PRE>
+<?php
+$form = '
+<div class="form-container">
+<form method="post" action="/Settings/DockerBuilder">
+<input type="hidden" name="mode" value="build_command">
+
+<h3>Step 1: Container Details</h3>
+<table class="settings_table">
+<tr><td><b>Container Name</b></td><td><input type="text" name="container_name" value="' . htmlspecialchars($containerName) . '" style="width:100%" placeholder="e.g. omni-operator"></td></tr>
+<tr><td><b>Repository (Image)</b></td><td><input type="text" name="repository" value="' . htmlspecialchars($repository) . '" style="width:100%" placeholder="e.g. ghcr.io/user/repo:latest"></td></tr>
+<tr><td><b>Repository URL</b></td><td><input type="text" name="repo_url" value="' . htmlspecialchars($repoUrl) . '" style="width:100%" placeholder="e.g. https://github.com/user/repo"></td></tr>
+<tr><td><b>Overview / Description</b></td><td><input type="text" name="overview" value="' . htmlspecialchars($overview) . '" style="width:100%" placeholder="Brief description"></td></tr>
+<tr><td><b>Category</b></td><td><input type="text" name="category" value="' . htmlspecialchars($category) . '" style="width:100%" placeholder="e.g. Productivity:Tools:"></td></tr>
+<tr><td><b>Restart Policy</b></td><td><select name="restart_policy" style="width:100%">
+<option value="unless-stopped"' . ($restartPolicy === "unless-stopped" ? " selected" : "") . '>unless-stopped</option>
+<option value="always"' . ($restartPolicy === "always" ? " selected" : "") . '>always</option>
+<option value="on-failure"' . ($restartPolicy === "on-failure" ? " selected" : "") . '>on-failure</option>
+<option value="no"' . ($restartPolicy === "no" ? " selected" : "") . '>no (do not restart)</option>
+</select></td></tr>
+<tr><td><b>Network Mode</b></td><td><select name="network" style="width:100%">
+<option value="bridge"' . ($network === "bridge" ? " selected" : "") . '>bridge</option>
+<option value="host"' . ($network === "host" ? " selected" : "") . '>host</option>
+<option value="none"' . ($network === "none" ? " selected" : "") . '>none</option>
+</select></td></tr>
+</table>
+
+<h3>Step 2: Configuration</h3>
+<table class="settings_table">
+<tr><td><b>Environment Variables</b><br><i>one per line: KEY=value</i></td><td><textarea name="env_vars" rows="6" style="width:100%;font-family:monospace" placeholder="BOT_TOKEN=your-token
+AUTHORIZED_USERS=12345">' . htmlspecialchars($envVars) . '</textarea></td></tr>
+<tr><td><b>Port Mappings</b><br><i>one per line: host:container</i></td><td><textarea name="ports" rows="4" style="width:100%;font-family:monospace" placeholder="8080:8080">' . htmlspecialchars($ports) . '</textarea></td></tr>
+<tr><td><b>Volume Mounts</b><br><i>one per line: /host/path:/container/path</i></td><td><textarea name="volumes" rows="4" style="width:100%;font-family:monospace" placeholder="/mnt/user/appdata/my-app/data:/data">' . htmlspecialchars($volumes) . '</textarea></td></tr>
+</table>
+
+<br>
+<input type="submit" value="Generate docker run Command" class="button">
+<input type="submit" value="Save as Docker Template" class="button" formaction="/Settings/DockerBuilder" onclick="this.form.mode.value=\'save_template\'">
+<input type="submit" value="Launch Container Now" class="button" style="background:#4CAF50;color:white" formaction="/Settings/DockerBuilder" onclick="this.form.mode.value=\'launch\'">
+</form>
+</div>';
+echo $form;
+?>
+</PRE>
+<PRE>
+<?php if ($result): ?>
+</PRE>
+<MARKDOWN>
+## Result
+
+```
+<?php echo htmlspecialchars($result); ?>
+```
+</MARKDOWN>
+<PRE>
+<?php endif; ?>
+</PRE>
+<PRE>
+<?php
+$templates = listSavedTemplates();
+if ($templates) {
+    echo '<h2>Saved Templates</h2>';
+    echo '<table class="settings_table"><tr><th>Template</th><th>Container</th><th>Repository</th><th></th></tr>';
+    foreach ($templates as $t) {
+        echo '<tr><td>' . htmlspecialchars($t['file']) . '</td><td>' . htmlspecialchars($t['name']) . '</td><td>' . htmlspecialchars($t['repository']) . '</td>';
+        echo '<td><a href="/Settings/DockerBuilder?load=' . urlencode($t['file']) . '">Load</a></td></tr>';
+    }
+    echo '</table>';
+}
+?>
+</PRE>
+</Page>
+]]></INLINE>
+</FILE>
+
+</PLUGIN>
