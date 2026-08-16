@@ -6,7 +6,7 @@
 <!ENTITY launch    "Settings">
 <!ENTITY plugdir   "/usr/local/emhttp/plugins/&name;">
 <!ENTITY pluginURL "">
-<!ENTITY md5       "">
+<!ENTITY md5       "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6">
 ]>
 
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.12.0" support="https://github.com/TheNoticingBegins">
@@ -563,5 +563,12 @@ if ($t) {
 }
 ?>]]></INLINE>
 </FILE>
+
+<SCRIPT>
+# Clean up old versions to prevent "skipping" on reinstall
+rm -f /usr/local/emhttp/plugins/docker-builder/DockerBuilder.page
+rm -f /usr/local/emhttp/plugins/docker-builder/DockerBuilder.php
+exit 0
+</SCRIPT>
 
 </PLUGIN>
