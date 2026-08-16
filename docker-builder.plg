@@ -576,7 +576,7 @@ if ($t) {
     foreach ($t as $x) echo '<tr><td>' . $h($x['file']) . '</td><td>' . $h($x['name']) . '</td><td>' . $h($x['repository']) . '</td></tr>';
     echo '</table>';
 }
-?></INLINE>
+?>]]></INLINE>
 </FILE>
 
 <!-- Remove script: cleans up on uninstall -->
