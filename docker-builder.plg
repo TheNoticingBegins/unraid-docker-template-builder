@@ -27,7 +27,42 @@
  * Handles form processing, command generation, template saving, container launch.
  */
 
-function buildDockerRunCommand($name, $repo, $envVars, $ports, $volumes, $network, $restart) {
+function getDefaultTemplateDir() {
+    return "/boot/config/plugins/dockerMan/templates-user";
+}
+
+function getTemplateDir() {
+    $dir = isset($_POST['template_dir']) ? trim($_POST['template_dir']) : '';
+    if ($dir === '') {
+        $dir = isset($_GET['template_dir']) ? trim($_GET['template_dir']) : '';
+    }
+    if ($dir === '') {
+        // Check saved config
+        $cfg = getConfig();
+        $dir = $cfg['template_dir'] ?? '';
+    }
+    if ($dir === '') {
+        $dir = getDefaultTemplateDir();
+    }
+    return rtrim($dir, '/');
+}
+
+function getConfig() {
+    $cfgFile = "/boot/config/plugins/docker-builder/config.json";
+    if (file_exists($cfgFile)) {
+        $data = json_decode(file_get_contents($cfgFile), true);
+        if (is_array($data)) return $data;
+    }
+    return ['template_dir' => getDefaultTemplateDir()];
+}
+
+function saveConfig($cfg) {
+    $dir = "/boot/config/plugins/docker-builder";
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    file_put_contents("$dir/config.json", json_encode($cfg, JSON_PRETTY_PRINT));
+}
+
+function buildDockerRunCommand($name, $repo, $envVars, $ports, $volumes, $network, $restart, $extraArgs) {
     $cmd = "docker run -d \\\n";
     $cmd .= "  --name=" . escapeshellarg($name) . " \\\n";
     $cmd .= "  --restart=" . escapeshellarg($restart) . " \\\n";
@@ -49,14 +84,16 @@ function buildDockerRunCommand($name, $repo, $envVars, $ports, $volumes, $networ
         if (!$line || strpos($line, ':') === false) continue;
         $cmd .= "  -v " . escapeshellarg($line) . " \\\n";
     }
+    if ($extraArgs) {
+        $cmd .= "  " . $extraArgs . " \\\n";
+    }
     $cmd .= "  " . escapeshellarg($repo);
     return $cmd;
 }
 
-function saveDockerTemplate($name, $repo, $repoUrl, $overview, $envVars, $ports, $volumes, $network, $restart, $category) {
+function saveDockerTemplate($name, $repo, $repoUrl, $overview, $envVars, $ports, $volumes, $network, $restart, $category, $extraArgs, $templateDir) {
     $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '', $name);
     if (!$safeName) return "Error: Invalid container name";
-    $templateDir = "/boot/config/plugins/dockerMan/templates-user";
     if (!is_dir($templateDir)) @mkdir($templateDir, 0755, true);
     $xml = "<?xml version=\"1.0\"?>\n";
     $xml .= "<Container version=\"2\">\n";
@@ -90,25 +127,25 @@ function saveDockerTemplate($name, $repo, $repoUrl, $overview, $envVars, $ports,
     $xml .= "</Container>\n";
     $file = "$templateDir/$safeName.xml";
     if (file_put_contents($file, $xml)) {
+        saveConfig(['template_dir' => $templateDir]);
         return "Template saved to $file\n\nIt will appear in Community Applications under 'Installed Apps'.";
     }
     return "Error: Could not write template file.";
 }
 
-function launchContainer($name, $repo, $envVars, $ports, $volumes, $network, $restart) {
-    $cmd = buildDockerRunCommand($name, $repo, $envVars, $ports, $volumes, $network, $restart);
+function launchContainer($name, $repo, $envVars, $ports, $volumes, $network, $restart, $extraArgs) {
+    $cmd = buildDockerRunCommand($name, $repo, $envVars, $ports, $volumes, $network, $restart, $extraArgs);
     $output = shell_exec($cmd . " 2>&1");
     if ($output === null) return "Error: Failed to execute docker run command.";
     return "Container launched successfully.\n\nCommand:\n$cmd\n\nOutput:\n" . trim($output);
 }
 
-function listSavedTemplates() {
-    $dir = "/boot/config/plugins/dockerMan/templates-user";
+function listTemplates($dir) {
     if (!is_dir($dir)) return [];
     $templates = [];
     foreach (glob("$dir/*.xml") as $f) {
         $xml = simplexml_load_file($f);
-        if ($xml) {
+        if ($xml && isset($xml->Name)) {
             $templates[] = [
                 'name' => (string)$xml->Name,
                 'repository' => (string)$xml->Repository,
@@ -119,13 +156,35 @@ function listSavedTemplates() {
     return $templates;
 }
 
-if (isset($_GET['load'])) {
-    $file = basename($_GET['load']);
-    $path = "/boot/config/plugins/dockerMan/templates-user/$file";
-    if (file_exists($path)) {
-        header("Location: /Settings/DockerBuilder?loaded=" . urlencode($file));
-        exit;
-    }
+function loadTemplateFile($file) {
+    if (!file_exists($file)) return null;
+    $xml = simplexml_load_file($file);
+    if (!$xml) return null;
+    return [
+        'name' => (string)$xml->Name,
+        'repository' => (string)$xml->Repository,
+        'repo_url' => (string)$xml->Registry,
+        'overview' => (string)$xml->Overview,
+        'category' => (string)$xml->Category,
+    ];
+}
+
+if (isset($_GET['ajax'])) {
+    header('Content-Type: application/json');
+    $templateDir = getTemplateDir();
+    $templates = listTemplates($templateDir);
+    echo json_encode($templates);
+    exit;
+}
+
+if (isset($_GET['loadfile'])) {
+    header('Content-Type: application/json');
+    $templateDir = getTemplateDir();
+    $file = basename($_GET['loadfile']);
+    $path = "$templateDir/$file";
+    $data = loadTemplateFile($path);
+    echo json_encode($data ?: []);
+    exit;
 }
 ]]></INLINE>
 </FILE>
@@ -138,6 +197,7 @@ if (isset($_GET['load'])) {
 require_once '/usr/local/emhttp/plugins/docker-builder/DockerBuilder.php';
 
 $mode = isset($_POST['mode']) ? $_POST['mode'] : '';
+
 $containerName = isset($_POST['container_name']) ? $_POST['container_name'] : '';
 $repository    = isset($_POST['repository']) ? $_POST['repository'] : '';
 $repoUrl       = isset($_POST['repo_url']) ? $_POST['repo_url'] : '';
@@ -148,14 +208,17 @@ $volumes       = isset($_POST['volumes']) ? $_POST['volumes'] : '';
 $network       = isset($_POST['network']) ? $_POST['network'] : 'bridge';
 $restartPolicy = isset($_POST['restart_policy']) ? $_POST['restart_policy'] : 'unless-stopped';
 $category      = isset($_POST['category']) ? $_POST['category'] : 'Productivity:';
+$extraArgs     = isset($_POST['extra_args']) ? $_POST['extra_args'] : '';
+
+$templateDir = getTemplateDir();
 
 $result = '';
 if ($mode === 'build_command') {
-    $result = buildDockerRunCommand($containerName, $repository, $envVars, $ports, $volumes, $network, $restartPolicy);
+    $result = buildDockerRunCommand($containerName, $repository, $envVars, $ports, $volumes, $network, $restartPolicy, $extraArgs);
 } elseif ($mode === 'save_template') {
-    $result = saveDockerTemplate($containerName, $repository, $repoUrl, $overview, $envVars, $ports, $volumes, $network, $restartPolicy, $category);
+    $result = saveDockerTemplate($containerName, $repository, $repoUrl, $overview, $envVars, $ports, $volumes, $network, $restartPolicy, $category, $extraArgs, $templateDir);
 } elseif ($mode === 'launch') {
-    $result = launchContainer($containerName, $repository, $envVars, $ports, $volumes, $network, $restartPolicy);
+    $result = launchContainer($containerName, $repository, $envVars, $ports, $volumes, $network, $restartPolicy, $extraArgs);
 }
 ?>
 </PRE>
@@ -169,11 +232,77 @@ Create Docker containers without clicking through menus. Fill in the details and
 <PRE>
 <?php
 $form = '
+<script>
+// Load templates into dropdown
+async function loadTemplateList() {
+    const dir = document.getElementById("template_dir").value;
+    try {
+        const resp = await fetch("/Settings/DockerBuilder?ajax=1&template_dir=" + encodeURIComponent(dir));
+        const templates = await resp.json();
+        const sel = document.getElementById("template_select");
+        sel.innerHTML = "<option value=\"\">-- Select existing template --</option>";
+        for (const t of templates) {
+            const opt = document.createElement("option");
+            opt.value = t.file;
+            opt.textContent = t.name + " (" + t.repository + ")";
+            sel.appendChild(opt);
+        }
+    } catch(e) {}
+}
+
+// Load a selected template into the form
+async function loadSelectedTemplate(file) {
+    if (!file) return;
+    const dir = document.getElementById("template_dir").value;
+    try {
+        const resp = await fetch("/Settings/DockerBuilder?loadfile=" + encodeURIComponent(file) + "&template_dir=" + encodeURIComponent(dir));
+        const data = await resp.json();
+        if (data.name) {
+            document.querySelector("input[name=\"container_name\"").value = data.name;
+            document.querySelector("input[name=\"repository\"").value = data.repository || "";
+            document.querySelector("input[name=\"repo_url\"").value = data.repo_url || "";
+            document.querySelector("input[name=\"overview\"").value = data.overview || "";
+            document.querySelector("input[name=\"category\"").value = data.category || "";
+        }
+    } catch(e) {}
+}
+
+// Clear form for new template
+function clearForm() {
+    document.querySelectorAll("input[type=\"text\"], textarea").forEach(el => el.value = "");
+    document.getElementById("template_select").value = "";
+}
+
+// Refresh template list when directory changes
+document.addEventListener("DOMContentLoaded", function() {
+    document.getElementById("template_dir").addEventListener("change", loadTemplateList);
+    document.getElementById("template_select").addEventListener("change", function() {
+        loadSelectedTemplate(this.value);
+    });
+    loadTemplateList();
+});
+</script>
+
 <div class="form-container">
 <form method="post" action="/Settings/DockerBuilder">
-<input type="hidden" name="mode" value="build_command">
 
-<h3>Step 1: Container Details</h3>
+<h3>Template Directory</h3>
+<table class="settings_table">
+<tr><td><b>Template Directory</b></td><td><input type="text" id="template_dir" name="template_dir" value="' . htmlspecialchars($templateDir) . '" style="width:100%" placeholder="/boot/config/plugins/dockerMan/templates-user"><br><i>Where Docker XML template files are stored</i></td></tr>
+</table>
+
+<h3>New or Existing</h3>
+<table class="settings_table">
+<tr><td><b>Existing Templates</b></td><td>
+<select id="template_select" style="width:80%">
+<option value="">-- Select existing template --</option>
+</select>
+<input type="button" value="Load" class="button" onclick="loadSelectedTemplate(document.getElementById(\'template_select\').value)">
+</td></tr>
+<tr><td></td><td><input type="button" value="New Template" class="button" onclick="clearForm(); document.getElementById(\'template_select\').value=\'\'; document.querySelector(\'input[name=\"container_name\"]\').focus();"></td></tr>
+</table>
+
+<h3>Container Details</h3>
 <table class="settings_table">
 <tr><td><b>Container Name</b></td><td><input type="text" name="container_name" value="' . htmlspecialchars($containerName) . '" style="width:100%" placeholder="e.g. omni-operator"></td></tr>
 <tr><td><b>Repository (Image)</b></td><td><input type="text" name="repository" value="' . htmlspecialchars($repository) . '" style="width:100%" placeholder="e.g. ghcr.io/user/repo:latest"></td></tr>
@@ -193,12 +322,14 @@ $form = '
 </select></td></tr>
 </table>
 
-<h3>Step 2: Configuration</h3>
+<h3>Configuration</h3>
 <table class="settings_table">
 <tr><td><b>Environment Variables</b><br><i>one per line: KEY=value</i></td><td><textarea name="env_vars" rows="6" style="width:100%;font-family:monospace" placeholder="BOT_TOKEN=your-token
 AUTHORIZED_USERS=12345">' . htmlspecialchars($envVars) . '</textarea></td></tr>
 <tr><td><b>Port Mappings</b><br><i>one per line: host:container</i></td><td><textarea name="ports" rows="4" style="width:100%;font-family:monospace" placeholder="8080:8080">' . htmlspecialchars($ports) . '</textarea></td></tr>
 <tr><td><b>Volume Mounts</b><br><i>one per line: /host/path:/container/path</i></td><td><textarea name="volumes" rows="4" style="width:100%;font-family:monospace" placeholder="/mnt/user/appdata/my-app/data:/data">' . htmlspecialchars($volumes) . '</textarea></td></tr>
+<tr><td><b>Extra Docker Args</b><br><i>optional flags like --cap-add, --device</i></td><td><textarea name="extra_args" rows="2" style="width:100%;font-family:monospace" placeholder="--cap-add=NET_ADMIN
+--device=/dev/dri">' . htmlspecialchars($extraArgs) . '</textarea></td></tr>
 </table>
 
 <br>
@@ -225,13 +356,13 @@ echo $form;
 </PRE>
 <PRE>
 <?php
-$templates = listSavedTemplates();
+// List saved templates below
+$templates = listTemplates($templateDir);
 if ($templates) {
-    echo '<h2>Saved Templates</h2>';
-    echo '<table class="settings_table"><tr><th>Template</th><th>Container</th><th>Repository</th><th></th></tr>';
+    echo '<h2>Templates in ' . htmlspecialchars($templateDir) . '</h2>';
+    echo '<table class="settings_table"><tr><th>File</th><th>Container</th><th>Repository</th></tr>';
     foreach ($templates as $t) {
-        echo '<tr><td>' . htmlspecialchars($t['file']) . '</td><td>' . htmlspecialchars($t['name']) . '</td><td>' . htmlspecialchars($t['repository']) . '</td>';
-        echo '<td><a href="/Settings/DockerBuilder?load=' . urlencode($t['file']) . '">Load</a></td></tr>';
+        echo '<tr><td>' . htmlspecialchars($t['file']) . '</td><td>' . htmlspecialchars($t['name']) . '</td><td>' . htmlspecialchars($t['repository']) . '</td></tr>';
     }
     echo '</table>';
 }
