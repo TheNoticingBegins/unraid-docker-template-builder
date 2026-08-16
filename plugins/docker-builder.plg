@@ -24,7 +24,7 @@
 </CHANGES>
 
 <FILE Name="/boot/config/plugins/&name;/&name;-&version;-x86_64-1.txz" Run="upgradepkg --install-new">
-<URL>https://github.com/&github;/releases/download/v3.8/&name;-&version;-x86_64-1.txz</URL>
+<URL>https://github.com/&github;/releases/download/v4.0/&name;-&version;-x86_64-1.txz</URL>
 <MD5>&md5;</MD5>
 </FILE>
 
