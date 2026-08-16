@@ -1,4 +1,4 @@
-name: Build and release plugin
+name: Build release package
 
 on:
   push:
@@ -6,20 +6,24 @@ on:
       - 'v*'
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Build .txz package
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          chmod +x pkg_build.sh
+          ./pkg_build.sh "${VERSION}"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Release ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
           files: |
-            docker-builder.plg
-            README.md
+            docker-builder-*.txz
+            plugins/docker-builder.plg
+          generate_release_notes: true

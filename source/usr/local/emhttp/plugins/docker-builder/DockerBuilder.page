@@ -1,0 +1,294 @@
+Menu="Settings"
+Title="Docker Builder"
+Icon="DockerBuilder.png"
+---
+<?php
+require_once '/usr/local/emhttp/plugins/docker-builder/DockerBuilder.php';
+
+$m = isset($_POST['mode']) ? $_POST['mode'] : '';
+$fields = ['template_dir','container_name','repository','registry','network','privileged','shell',
+    'support','project','readme','overview','category','webui','templateurl','icon',
+    'extra_params','post_args','cpuset','requires',
+    'env_config','port_config','vol_config','dev_config'];
+$d = []; foreach ($fields as $k) $d[$k] = isset($_POST[$k]) ? $_POST[$k] : '';
+$td = getTemplateDir();
+
+$r = '';
+if ($m === 'build_command') {
+    $r = buildDockerRunCommand($d['container_name'],$d['repository'],$d['network'],$d['privileged'],$d['shell'],$d['cpuset'],$d['extra_params'],$d['post_args'],$d['env_config'],$d['port_config'],$d['vol_config'],$d['dev_config']);
+} elseif ($m === 'save_template') {
+    $r = saveDockerTemplate($d['container_name'],$d['repository'],$d['registry'],$d['network'],$d['privileged'],$d['shell'],$d['support'],$d['project'],$d['readme'],$d['overview'],$d['category'],$d['webui'],$d['templateurl'],$d['icon'],$d['extra_params'],$d['post_args'],$d['cpuset'],$d['requires'],$d['env_config'],$d['port_config'],$d['vol_config'],$d['dev_config'],$td);
+} elseif ($m === 'launch') {
+    $r = launchContainer($d['container_name'],$d['repository'],$d['network'],$d['privileged'],$d['shell'],$d['cpuset'],$d['extra_params'],$d['post_args'],$d['env_config'],$d['port_config'],$d['vol_config'],$d['dev_config']);
+} elseif ($m === 'verify') { $r = implode("\n", verifyAllTemplates($td)); }
+
+$h = 'htmlspecialchars';
+$shares = getUnraidShares();
+$nets = dockerNetworks();
+?>
+<h2>Docker Builder</h2>
+<p style="color:#888">Create Docker containers. Fill in the form to generate commands or save templates.</p>
+<hr>
+
+<script>
+async function refreshList() {
+    const d = document.getElementById("template_dir").value;
+    const r = await fetch("/Settings/DockerBuilder?ajax=1&template_dir="+encodeURIComponent(d));
+    const t = await r.json();
+    const s = document.getElementById("template_select");
+    s.innerHTML = "<option value=\"\">-- Select --</option>";
+    t.forEach(x => { const o = document.createElement("option"); o.value=x.file; o.textContent=x.name+" ("+x.repository+")"; s.appendChild(o); });
+}
+async function loadSelected(file) {
+    if (!file) return;
+    const d = document.getElementById("template_dir").value;
+    const r = await fetch("/Settings/DockerBuilder?loadfile="+encodeURIComponent(file)+"&template_dir="+encodeURIComponent(d));
+    const data = await r.json();
+    if (!data.name) return;
+    document.querySelector("[name=\"container_name\"]").value = data.name || "";
+    document.querySelector("[name=\"repository\"]").value = data.repository || "";
+    document.querySelector("[name=\"registry\"]").value = data.registry || "";
+    document.querySelector("[name=\"network\"]").value = data.network || "bridge";
+    document.querySelector("[name=\"privileged\"]").value = data.privileged || "false";
+    document.querySelector("[name=\"shell\"]").value = data.shell || "";
+    document.querySelector("[name=\"support\"]").value = data.support || "";
+    document.querySelector("[name=\"project\"]").value = data.project || "";
+    document.querySelector("[name=\"readme\"]").value = data.readme || "";
+    document.querySelector("[name=\"overview\"]").value = data.overview || "";
+    document.querySelector("[name=\"category\"]").value = data.category || "";
+    document.querySelector("[name=\"webui\"]").value = data.webui || "";
+    document.querySelector("[name=\"templateurl\"]").value = data.templateurl || "";
+    document.querySelector("[name=\"icon\"]").value = data.icon || "";
+    document.querySelector("[name=\"extra_params\"]").value = data.extra || "";
+    document.querySelector("[name=\"post_args\"]").value = data.post || "";
+    document.querySelector("[name=\"cpuset\"]").value = data.cpuset || "";
+    document.querySelector("[name=\"requires\"]").value = data.requires || "";
+    document.querySelector("[name=\"env_config\"]").value = data.envCfg || "";
+    document.querySelector("[name=\"port_config\"]").value = data.portCfg || "";
+    document.querySelector("[name=\"vol_config\"]").value = data.volCfg || "";
+    document.querySelector("[name=\"dev_config\"]").value = data.devCfg || "";
+}
+function clearForm() {
+    document.querySelectorAll("input, textarea, select").forEach(e => { if (e.type!=="hidden" && e.type!=="submit" && e.type!=="button") e.value=""; });
+    document.getElementById("template_select").value="";
+}
+function addGPU() {
+    const e = document.querySelector("[name=\"extra_params\"]");
+    const gpu = "--device=/dev/dri --device=/dev/kfd";
+    if (e.value.indexOf(gpu)===-1) e.value = (e.value.trim()?e.value.trim()+" ":"") + gpu;
+}
+function addNVIDIA() {
+    const e = document.querySelector("[name=\"extra_params\"]");
+    const nv = "--gpus all";
+    if (e.value.indexOf(nv)===-1) e.value = (e.value.trim()?e.value.trim()+" ":"") + nv;
+}
+function toggleCPU(c) {
+    const inp = document.querySelector("[name=\"cpuset\"]");
+    let vals = inp.value ? inp.value.split(",").map(x => x.trim()).filter(x => x !== "") : [];
+    const idx = vals.indexOf(String(c));
+    if (idx > -1) vals.splice(idx, 1); else vals.push(String(c));
+    vals.sort((a,b) => parseInt(a)-parseInt(b));
+    inp.value = vals.join(",");
+    document.querySelectorAll(".cpu-btn").forEach(b => {
+        const core = parseInt(b.getAttribute("data-core"));
+        b.style.background = inp.value.split(",").indexOf(String(core)) > -1 ? "#4CAF50" : "";
+        b.style.color = inp.value.split(",").indexOf(String(core)) > -1 ? "white" : "";
+    });
+}
+async function loadShares() {
+    try {
+        const r = await fetch("/Settings/DockerBuilder?shares=1");
+        const shares = await r.json();
+        const sel = el || document.getElementById("share_selector");
+        sel.innerHTML = "<option value=\"\">-- Pick an Unraid share --</option>";
+        shares.forEach(s => { const o = document.createElement("option"); o.value=s; o.textContent=s; sel.appendChild(o); });
+    } catch(e) {}
+}
+function insertShare(el) {
+    const sel = el || document.getElementById("share_selector");
+    if (!sel.value) return;
+    const txt = document.querySelector("textarea[name=\"vol_config\"]");
+    if (!txt) return;
+    const lines = txt.value.split("\n");
+    const last = lines.length - 1;
+    const parts = lines[last].split("|");
+    if (parts.length >= 3) { parts[2] = sel.value; lines[last] = parts.join("|"); }
+    else if (parts.length === 2) { lines[last] = parts.join("|") + "|" + sel.value; }
+    else { lines[last] = "New Path|/container/path|" + sel.value + "|rw"; }
+    txt.value = lines.join("\n");
+}
+function addRow(type) {
+    const table = document.getElementById(type + "_table");
+    const row = table.insertRow(-1);
+    const idx = table.rows.length - 1;
+    if (type === "port") {
+        row.innerHTML = "<td><input type="text" name="p_name_"" + idx + " style="width:100%"></td>" +
+            "<td><input type="text" name="p_target_"" + idx + " style="width:100%" placeholder="8096"></td>" +
+            "<td><input type="text" name="p_default_"" + idx + " style="width:100%" placeholder="8096"></td>" +
+            "<td><select name=p_mode_" + idx + "><option value="tcp">tcp</option><option value="udp">udp</option></select></td>" +
+            "<td><input type=button value="X" class=button style="background:#c0392b;color:white" onclick="this.parentElement.parentElement.remove()"></td>";
+    } else if (type === "vol") {
+        row.innerHTML = "<td><input type="text" name="v_name_"" + idx + " style="width:100%"></td>" +
+            "<td><input type="text" name="v_target_"" + idx + " style="width:100%" placeholder="/config"></td>" +
+            "<td><input type="text" name="v_default_"" + idx + " style="width:100%" placeholder="/mnt/user/appdata/myapp"></td>" +
+            "<td><select name=v_mode_" + idx + "><option value="rw">rw</option><option value="ro">ro</option></select></td>" +
+            "<td><input type=button value="X" class=button style="background:#c0392b;color:white" onclick="this.parentElement.parentElement.remove()"></td>";
+    } else if (type === "env") {
+        row.innerHTML = "<td><input type="text" name="e_name_"" + idx + " style="width:100%"></td>" +
+            "<td><input type="text" name="e_target_"" + idx + " style="width:100%" placeholder="BOT_TOKEN"></td>" +
+            "<td><input type="text" name="e_default_"" + idx + " style="width:100%"></td>" +
+            "<td><select name=e_required_" + idx + "><option value="true">Yes *</option><option value="false">No</option></select></td>" +
+            "<td><input type=button value="X" class=button style="background:#c0392b;color:white" onclick="this.parentElement.parentElement.remove()"></td>";
+    } else if (type === "dev") {
+        row.innerHTML = "<td><input type="text" name="d_name_"" + idx + " style="width:100%"></td>" +
+            "<td><input type="text" name="d_target_"" + idx + " style="width:100%" placeholder="/dev/dri"></td>" +
+            "<td><input type=button value="X" class=button style="background:#c0392b;color:white" onclick="this.parentElement.parentElement.remove()"></td>";
+    }
+}
+document.addEventListener("DOMContentLoaded", function() {
+    document.getElementById("template_dir").addEventListener("change", refreshList);
+    document.getElementById("template_select").addEventListener("change", function() { loadSelected(this.value); });
+    refreshList(); loadShares();
+});
+</script>
+
+<form method="post" action="/Settings/DockerBuilder">
+<input type="hidden" name="mode" value="build_command">
+
+<h3>Template Directory</h3>
+<table class="settings_table">
+<tr><td><b>Template Directory</b></td><td><input type="text" id="template_dir" name="template_dir" value="<?=$h($d["template_dir"]?:$td)?>" style="width:100%" placeholder="/boot/config/plugins/dockerMan/templates-user"><br><i>Where Docker XML template files are stored</i></td></tr>
+</table>
+
+<h3>New or Existing</h3>
+<table class="settings_table">
+<tr><td><b>Existing Templates</b></td><td>
+<select id="template_select" style="width:70%"><option value="">-- Select --</option></select>
+<input type="button" value="Load" class="button" onclick="loadSelected(document.getElementById('template_select').value)">
+<input type="button" value="New Template" class="button" onclick="clearForm()"></td></tr>
+</table>
+
+<h3>Basic Info</h3>
+<table class="settings_table">
+<tr><td><b>Name</b> *</td><td><input type="text" name="container_name" value="<?=$h($d["container_name"])?>" style="width:100%" placeholder="e.g. jellyfin"></td></tr>
+<tr><td><b>Repository</b> *</td><td><input type="text" name="repository" value="<?=$h($d["repository"])?>" style="width:100%" placeholder="e.g. lscr.io/linuxserver/jellyfin:latest"></td></tr>
+<tr><td><b>Registry</b></td><td><input type="text" name="registry" value="<?=$h($d["registry"])?>" style="width:100%" placeholder="https://github.com/org/repo"></td></tr>
+<tr><td><b>Overview</b></td><td><textarea name="overview" rows="3" style="width:100%" placeholder="Description"><?=$h($d["overview"])?></textarea></td></tr>
+<tr><td><b>Category</b></td><td><input type="text" name="category" value="<?=$h($d["category"])?>" style="width:100%" placeholder="e.g. MediaServer:Video MediaServer:Music"></td></tr>
+</table>
+
+<h3>Networking & Security</h3>
+<table class="settings_table">
+<tr><td><b>Network</b></td><td><select name="network" style="width:100%">
+<option value="bridge"<?=($d["network"]==="bridge"?" selected":"")?>>bridge (default)</option>
+<option value="host"<?=($d["network"]==="host"?" selected":"")?>>host</option>
+<option value="none"<?=($d["network"]==="none"?" selected":"")?>>none</option>
+</select><br>
+<i>Or type a custom Docker network name</i>
+<input type="text" name="network_custom" value="<?=(in_array($d["network"],["bridge","host","none",""])?"":$h($d["network"]))?>" style="width:100%" list="docker-net-list" placeholder="Custom network name">
+<datalist id="docker-net-list"><?php foreach ($nets as $net) { echo '<option value="'.$h($net).'">'; } ?></datalist></td></tr>
+<tr><td><b>Privileged</b></td><td>
+<input type="radio" name="privileged" value="false"<?=($d["privileged"]!=="true"?" checked":"")?>> False
+<input type="radio" name="privileged" value="true"<?=($d["privileged"]==="true"?" checked":"")?>> True
+<br><i>Default: false. Only enable if the container needs raw device access.</i></td></tr>
+<tr><td><b>Shell / Entrypoint</b></td><td><input type="text" name="shell" value="<?=$h($d["shell"])?>" style="width:100%" placeholder="bash"></td></tr>
+<tr><td><b>WebUI</b></td><td><input type="text" name="webui" value="<?=$h($d["webui"])?>" style="width:100%" placeholder="http://[IP]:[PORT:8096]"></td></tr>
+</table>
+
+<h3>Links & Branding</h3>
+<table class="settings_table">
+<tr><td><b>Support URL</b></td><td><input type="text" name="support" value="<?=$h($d["support"])?>" style="width:100%" placeholder="https://github.com/org/repo/issues"></td></tr>
+<tr><td><b>Project URL</b></td><td><input type="text" name="project" value="<?=$h($d["project"])?>" style="width:100%" placeholder="https://github.com/org/repo"></td></tr>
+<tr><td><b>ReadMe URL</b></td><td><input type="text" name="readme" value="<?=$h($d["readme"])?>" style="width:100%"></td></tr>
+<tr><td><b>Icon URL</b></td><td><input type="text" name="icon" value="<?=$h($d["icon"])?>" style="width:100%" placeholder="https://example.com/icon.png"></td></tr>
+</table>
+
+<h3>Port Mappings</h3>
+<table class="settings_table" id="port_table">
+<tr><th>Name</th><th>Container Port</th><th>Host Port</th><th>Protocol</th><th></th></tr>
+<tr>
+<td><input type="text" name="p_name_0" style="width:100%" placeholder="WebUI"></td>
+<td><input type="text" name="p_target_0" style="width:100%" placeholder="8096"></td>
+<td><input type="text" name="p_default_0" style="width:100%" placeholder="8096"></td>
+<td><select name="p_mode_0"><option value="tcp">tcp</option><option value="udp">udp</option></select></td>
+<td><input type="button" value="X" class="button" style="background:#c0392b;color:white" onclick="this.parentElement.parentElement.remove()"></td>
+</tr>
+</table>
+<input type="button" value="Add Port" class="button" onclick="addRow('port')">
+
+<h3>Volume Mounts</h3>
+<table class="settings_table" id="vol_table">
+<tr><th>Name</th><th>Container Path</th><th>Host Path</th><th>Mode</th><th></th></tr>
+<tr>
+<td><input type="text" name="v_name_0" style="width:100%" placeholder="Config"></td>
+<td><input type="text" name="v_target_0" style="width:100%" placeholder="/config"></td>
+<td><input type="text" name="v_default_0" style="width:100%" placeholder="/mnt/user/appdata/myapp">
+<select id="share_selector" onchange="insertShare(this)"><option value="">-- Pick share --</option></select>
+</td>
+<td><select name="v_mode_0"><option value="rw">rw</option><option value="ro">ro</option></select></td>
+<td><input type="button" value="X" class="button" style="background:#c0392b;color:white" onclick="this.parentElement.parentElement.remove()"></td>
+</tr>
+</table>
+<input type="button" value="Add Volume" class="button" onclick="addRow('vol')">
+
+<h3>Environment Variables</h3>
+<table class="settings_table" id="env_table">
+<tr><th>Name</th><th>Variable</th><th>Default Value</th><th>Required</th><th></th></tr>
+<tr>
+<td><input type="text" name="e_name_0" style="width:100%" placeholder="Bot Token"></td>
+<td><input type="text" name="e_target_0" style="width:100%" placeholder="BOT_TOKEN"></td>
+<td><input type="text" name="e_default_0" style="width:100%" placeholder="your-token"></td>
+<td><select name="e_required_0"><option value="true">Yes *</option><option value="false">No</option></select></td>
+<td><input type="button" value="X" class="button" style="background:#c0392b;color:white" onclick="this.parentElement.parentElement.remove()"></td>
+</tr>
+</table>
+<input type="button" value="Add Environment Variable" class="button" onclick="addRow('env')">
+
+<h3>Device Mappings</h3>
+<table class="settings_table" id="dev_table">
+<tr><th>Name</th><th>Device Path</th><th></th></tr>
+<tr>
+<td><input type="text" name="d_name_0" style="width:100%" placeholder="GPU"></td>
+<td><input type="text" name="d_target_0" style="width:100%" placeholder="/dev/dri"></td>
+<td><input type="button" value="X" class="button" style="background:#c0392b;color:white" onclick="this.parentElement.parentElement.remove()"></td>
+</tr>
+</table>
+<input type="button" value="Add Device" class="button" onclick="addRow('dev')">
+
+<h3>Extra Parameters</h3>
+
+<h3>Advanced</h3>
+<table class="settings_table">
+<tr><td><b>Extra Parameters</b></td><td>
+<textarea name="extra_params" rows="3" style="width:100%;font-family:monospace" placeholder="--device=/dev/dri --device=/dev/kfd"><?=$h($d["extra_params"])?></textarea><br>
+<input type="button" value="Add AMD GPU" class="button" onclick="addGPU()">
+<input type="button" value="Add NVIDIA GPU" class="button" onclick="addNVIDIA()">
+</td></tr>
+<tr><td><b>Post Args</b></td><td><input type="text" name="post_args" value="<?=$h($d["post_args"])?>" style="width:100%;font-family:monospace" placeholder="Arguments after image name"></td></tr>
+<tr><td><b>CPUset (CPU Pinning)</b></td><td>
+<input type="text" name="cpuset" value="<?=$h($d["cpuset"])?>" style="width:100%" placeholder="e.g. 0,1,2,3 or 0-3"><br>
+<i>Enter CPU core numbers. Click cores below to toggle:</i><br>
+<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">
+<?php for ($i = 0; $i <= 15; $i++): ?>
+<span class="cpu-btn" data-core="<?=$i?>" onclick="toggleCPU(<?=$i?>)" style="display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;background:<?=(strpos($d["cpuset"],"$i")!==false?"#4CAF50":"#0f3460")?>;color:<?=(strpos($d["cpuset"],"$i")!==false?"white":"#ddd")?>;border:1px solid #1a4a7a;border-radius:3px;cursor:pointer;font-size:12px;margin:2px"><?=$i?></span>
+<?php endfor; ?></div></td></tr>
+<tr><td><b>Requires</b></td><td><input type="text" name="requires" value="<?=$h($d["requires"])?>" style="width:100%" placeholder="e.g. BOT_TOKEN,AUTHORIZED_USERS"><br><i>Comma-separated env vars that must be set</i></td></tr>
+</table>
+
+<br>
+<input type="submit" value="Generate docker run Command" class="button">
+<input type="submit" value="Save as Docker Template" class="button" formaction="/Settings/DockerBuilder" onclick="this.form.mode.value='save_template'">
+<input type="submit" value="Launch Container Now" class="button" style="background:#4CAF50;color:white" formaction="/Settings/DockerBuilder" onclick="this.form.mode.value='launch'">
+<input type="submit" value="Verify Templates" class="button" style="background:#FF9800;color:white" formaction="/Settings/DockerBuilder" onclick="this.form.mode.value='verify'">
+</form>
+
+<?php if ($r): ?>
+<h3>Result</h3>
+<pre><?=$h($r)?></pre>
+<?php endif; ?>
+
+<?php
+$t = listTemplates($td);
+if ($t) echo "<p>" . count($t) . " template(s) found in " . $h($td) . "</p>";
+else echo "<p><i>No templates in " . $h($td) . "</i></p>";
+?>
