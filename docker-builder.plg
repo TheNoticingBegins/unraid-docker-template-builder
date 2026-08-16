@@ -169,6 +169,107 @@ function loadTemplateFile($file) {
     ];
 }
 
+function verifyTemplateFile($file) {
+    $issues = [];
+    $errors = libxml_use_internal_errors(true);
+    $xml = simplexml_load_file($file);
+    if ($xml === false) {
+        foreach (libxml_get_errors() as $err) {
+            $issues[] = "XML parse error: " . trim($err->message) . " (line " . $err->line . ")";
+        }
+        libxml_clear_errors();
+        return $issues;
+    }
+    libxml_use_internal_errors($errors);
+
+    $name = (string)$xml->Name;
+    $basename = basename($file);
+
+    // Required fields
+    if (empty($name)) $issues[] = "[$basename] Missing <Name> — container name is required";
+    $repo = (string)$xml->Repository;
+    if (empty($repo)) $issues[] = "[$basename] Missing <Repository> — image is required";
+    else {
+        // Repository should look like image[:tag]
+        if (preg_match('/^[a-zA-Z0-9.\/:_-]+$/', $repo) !== 1) {
+            $issues[] = "[$basename] Repository contains invalid characters: '$repo'";
+        }
+        if (strpos($repo, ' ') !== false) {
+            $issues[] = "[$basename] Repository must not contain spaces: '$repo'";
+        }
+    }
+
+    // Container element must have version attr
+    if (empty($xml['version'])) {
+        $issues[] = "[$basename] <Container> missing version attribute (should be version=\"2\")";
+    }
+
+    // Check Config entries (ports/volumes)
+    foreach ($xml->Config as $cfg) {
+        $target = (string)$cfg['Target'];
+        $type = (string)$cfg['Type'];
+        if (empty($target)) {
+            $issues[] = "[$basename] A <Config> entry is missing the Target attribute";
+        }
+        if (empty($type)) {
+            $issues[] = "[$basename] Config entry '$target' is missing Type (Port/Path/WebUI)";
+        }
+        if ($type === 'Port') {
+            $default = (string)$cfg['Default'];
+            if ($default !== '' && preg_match('/^\d+$/D', $default) !== 1) {
+                $issues[] = "[$basename] Config '$target' is Type=Port but Default='$default' is not a valid port number";
+            }
+        }
+    }
+
+    // Check Environment entries
+    foreach ($xml->Environment as $env) {
+        $key = (string)$env['name'];
+        if (empty($key)) {
+            $issues[] = "[$basename] An <Environment> entry is missing the name attribute";
+        } else {
+            if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/D', $key) !== 1) {
+                $issues[] = "[$basename] Environment name '$key' is invalid (must be KEY format, e.g. BOT_TOKEN)";
+            }
+        }
+        if (empty($env['default']) && !empty($env['required']) && strtolower($env['required']) === 'true') {
+            $issues[] = "[$basename] Required environment variable '$key' has no default value";
+        }
+    }
+
+    // Check for empty container (no config, no env, no ports)
+    if (count($xml->Config) === 0 && count($xml->Environment) === 0) {
+        $issues[] = "[$basename] Template has no Config or Environment entries — is this complete?";
+    }
+
+    return $issues;
+}
+
+function verifyAllTemplates($dir) {
+    if (!is_dir($dir)) {
+        return ["Template directory does not exist: $dir"];
+    }
+    $files = glob("$dir/*.xml");
+    if (!$files) {
+        return ["No .xml template files found in $dir"];
+    }
+    $allIssues = [];
+    $checked = 0;
+    foreach ($files as $f) {
+        $checked++;
+        $issues = verifyTemplateFile($f);
+        foreach ($issues as $i) {
+            $allIssues[] = $i;
+        }
+    }
+    if (empty($allIssues)) {
+        $allIssues[] = "✓ All $checked template file(s) passed validation.";
+    } else {
+        array_unshift($allIssues, "Checked $checked file(s), found " . count($allIssues) . " issue(s):");
+    }
+    return $allIssues;
+}
+
 if (isset($_GET['ajax'])) {
     header('Content-Type: application/json');
     $templateDir = getTemplateDir();
@@ -219,6 +320,9 @@ if ($mode === 'build_command') {
     $result = saveDockerTemplate($containerName, $repository, $repoUrl, $overview, $envVars, $ports, $volumes, $network, $restartPolicy, $category, $extraArgs, $templateDir);
 } elseif ($mode === 'launch') {
     $result = launchContainer($containerName, $repository, $envVars, $ports, $volumes, $network, $restartPolicy, $extraArgs);
+} elseif ($mode === 'verify') {
+    $verification = verifyAllTemplates($templateDir);
+    $result = implode("\n", $verification);
 }
 ?>
 </PRE>
@@ -336,6 +440,7 @@ AUTHORIZED_USERS=12345">' . htmlspecialchars($envVars) . '</textarea></td></tr>
 <input type="submit" value="Generate docker run Command" class="button">
 <input type="submit" value="Save as Docker Template" class="button" formaction="/Settings/DockerBuilder" onclick="this.form.mode.value=\'save_template\'">
 <input type="submit" value="Launch Container Now" class="button" style="background:#4CAF50;color:white" formaction="/Settings/DockerBuilder" onclick="this.form.mode.value=\'launch\'">
+<input type="submit" value="Verify Templates" class="button" style="background:#FF9800;color:white" formaction="/Settings/DockerBuilder" onclick="this.form.mode.value=\'verify\'">
 </form>
 </div>';
 echo $form;
